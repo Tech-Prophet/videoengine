@@ -512,7 +512,7 @@ export default function App() {
 
   const [W, H] = dims(fmt, res);
   const sel = scenes.find((s) => s.id === selId) ?? scenes[0];
-  const starts = useMemo(() => scenes.reduce<number[]>((a, s, i) => [...a, i ? a[i - 1] + scenes[i - 1].duration : 0], []), [scenes]);
+  const starts = useMemo(() => scenes.reduce<number[]>((a, _s, i) => [...a, i ? a[i - 1] + scenes[i - 1].duration : 0], []), [scenes]);
   const total = scenes.reduce((a, s) => a + s.duration, 0);
   const live = useRef<Live>({ scenes, starts, total, caps, W, H, intro, voiceVol, musicVol });
   live.current = { scenes, starts, total, caps, W, H, intro, voiceVol, musicVol };
@@ -942,8 +942,9 @@ DELIVERY: voiceover
     outs.forEach((g) => g.connect(dest));
     const stream = c.captureStream(fps);
     dest.stream.getAudioTracks().forEach((a) => stream.addTrack(a));
-    const r = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: res >= 1440 ? 16e6 : res >= 1080 ? 8e6 : 5e6 });
+    const r = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: res >= 1440 ? 12e6 : res >= 1080 ? 6e6 : 3e6 });
     const chunks: Blob[] = [];
+    r.onerror = () => setMsg("The browser's recorder failed. Try 720p, or use desktop Chrome.");
     let hidden = document.hidden;
     const onVis = () => { if (document.hidden) hidden = true; };
     document.addEventListener("visibilitychange", onVis);
@@ -956,6 +957,11 @@ DELIVERY: voiceover
       exportStart.current = null;
       outs.forEach((g) => { try { g.disconnect(dest); } catch { /* ignore */ } });
       const blob = new Blob(chunks, { type: mime.split(";")[0] });
+      if (blob.size < 50_000) {
+        setFile(null); setExporting(false); setStage(0);
+        setMsg("Recording failed (empty file). Use 720p at 30 fps, keep this tab in front, or try desktop Chrome.");
+        return;
+      }
       const took = (performance.now() - began) / 1000;
       setFile({ url: URL.createObjectURL(blob), name: `vortex-${fmt}-${res}p.${mime.startsWith("video/mp4") ? "mp4" : "webm"}`, mb: blob.size / 1e6 });
       setExporting(false); setStage(5);
