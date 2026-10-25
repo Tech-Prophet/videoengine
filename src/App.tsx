@@ -15,6 +15,7 @@ type Live = { scenes: Scene[]; starts: number[]; total: number; caps: boolean; W
 
 const PALETTES = [["#1b1442", "#6d3df0"], ["#0b1f33", "#13a8c9"], ["#0f2a22", "#2fb67c"], ["#3a1212", "#e8643a"], ["#1d1d3a", "#d6458f"]];
 const FONT = "Inter, system-ui, sans-serif";
+const NO_PROVIDERS = { pixabay: false, pexels: false, openai: false };
 const SHOT_SECONDS = 3; // Pictures rotate faster for more visuals per scene
 const uid = () => Math.random().toString(36).slice(2, 9);
 const words = (s: string) => s.trim().split(/\s+/).filter(Boolean);
@@ -173,14 +174,19 @@ async function fetchPhoto(url: string): Promise<string | null> {
   } catch { return null; }
 }
 
+// In the stock and voice helpers below, "key" is the access code for our own server functions
+// (or "" when that provider has no key on the server). Real provider keys never reach the browser.
+const apiStock = (qs: string, code: string) => fetch(`/api/stock?${qs}`, { headers: { "x-access-code": code } });
+const orient = (f: Fmt) => (f === "long" ? "landscape" : "portrait");
+
 async function stockImages(key: string, groups: { q: string; cap: number }[], f: Fmt, n: number): Promise<string[]> {
   const seen = new Set<number>(), urls: string[] = [];
   if (key) {
     for (const g of groups) {
       if (!g.q || urls.length >= n) continue;
       try {
-        const r = await fetch(`https://pixabay.com/api/?key=${encodeURIComponent(key)}&q=${encodeURIComponent(g.q)}&image_type=photo&orientation=${f === "long" ? "horizontal" : "vertical"}&safesearch=true&per_page=${Math.min(200, n + 6)}`);
-        if (!r.ok) throw new Error("Pixabay request failed. Check your key.");
+        const r = await apiStock(`provider=pixabay&kind=photos&q=${encodeURIComponent(g.q)}&orientation=${orient(f)}&per_page=${Math.min(50, n + 6)}`, key);
+        if (!r.ok) throw new Error("Pixabay request failed. Check the access code and the server keys.");
         let taken = 0;
         for (const p of (await r.json()).hits ?? []) {
           if (urls.length >= n || taken >= g.cap) break;
@@ -199,7 +205,7 @@ async function stockVideos(key: string, groups: { q: string; cap: number }[], n:
   for (const g of groups) {
     if (!g.q || urls.length >= n) continue;
     try {
-      const r = await fetch(`https://pixabay.com/api/videos/?key=${encodeURIComponent(key)}&q=${encodeURIComponent(g.q)}&safesearch=true&per_page=${Math.min(50, n + 8)}`);
+      const r = await apiStock(`provider=pixabay&kind=videos&q=${encodeURIComponent(g.q)}&per_page=${Math.min(50, n + 8)}`, key);
       if (!r.ok) continue;
       let taken = 0;
       for (const p of (await r.json()).hits ?? []) {
@@ -230,7 +236,7 @@ async function pexelsVideos(key: string, groups: { q: string; cap: number }[], f
   for (const g of groups) {
     if (!g.q || links.length >= n) continue;
     try {
-      const r = await fetch(`https://api.pexels.com/videos/search?query=${encodeURIComponent(g.q)}&orientation=${f === "long" ? "landscape" : "portrait"}&per_page=${Math.min(40, n + 8)}`, { headers: { Authorization: key } });
+      const r = await apiStock(`provider=pexels&kind=videos&q=${encodeURIComponent(g.q)}&orientation=${orient(f)}&per_page=${Math.min(40, n + 8)}`, key);
       if (!r.ok) continue;
       let taken = 0;
       for (const v of (await r.json()).videos ?? []) {
@@ -251,7 +257,7 @@ async function pexelsPhotos(key: string, groups: { q: string; cap: number }[], f
   for (const g of groups) {
     if (!g.q || urls.length >= n) continue;
     try {
-      const r = await fetch(`https://api.pexels.com/v1/search?query=${encodeURIComponent(g.q)}&orientation=${f === "long" ? "landscape" : "portrait"}&per_page=${Math.min(40, n + 6)}`, { headers: { Authorization: key } });
+      const r = await apiStock(`provider=pexels&kind=photos&q=${encodeURIComponent(g.q)}&orientation=${orient(f)}&per_page=${Math.min(40, n + 6)}`, key);
       if (!r.ok) continue;
       let taken = 0;
       for (const p of (await r.json()).photos ?? []) {
@@ -437,13 +443,16 @@ const borrowVisuals = (list: Scene[]): Scene[] =>
 /* ---------- NARRATION ---------- */
 async function speak(key: string, text: string, voice: string) {
   for (let a = 0; a < 3; a++) {
-    const r = await fetch("https://api.openai.com/v1/audio/speech", {
+    const r = await fetch("/api/tts", {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-      body: JSON.stringify({ model: "tts-1", voice, input: text }),
+      headers: { "Content-Type": "application/json", "x-access-code": key },
+      body: JSON.stringify({ text, voice }),
     });
     if (r.ok) return r.blob();
-    if (r.status !== 429 && r.status < 500) throw new Error(`Voice API returned ${r.status}.`);
+    if (![429, 502, 503, 504].includes(r.status)) {
+      const why = await r.json().then((j: { error?: string }) => j.error).catch(() => undefined);
+      throw new Error(why || `Voice API returned ${r.status}.`);
+    }
     await new Promise((res) => setTimeout(res, 1500 * (a + 1)));
   }
   throw new Error("Voice API is busy.");
@@ -669,9 +678,11 @@ export default function App() {
   const aiSt = useRef<AiState>({ fails: 0 });
   const creditsRef = useRef<string[]>([]);
   const [msg, setMsg] = useState("");
-  const [keys, setKeys] = useState<{ pixabay: string; pexels: string; openai: string }>(() => {
-    try { const s = JSON.parse(localStorage.getItem("vortex-keys") || "{}"); return { pixabay: s.pixabay || "", pexels: s.pexels || "", openai: s.openai || "" }; } catch { return { pixabay: "", pexels: "", openai: "" }; }
-  });
+  const [code, setCode] = useState<string>(() => { try { return localStorage.getItem("vortex-access") || ""; } catch { return ""; } });
+  const [server, setServer] = useState(NO_PROVIDERS);
+  const [serverMsg, setServerMsg] = useState("");
+  // Each value is the access code when that provider has a key on the server, otherwise "".
+  const keys = { pixabay: server.pixabay ? code : "", pexels: server.pexels ? code : "", openai: server.openai ? code : "" };
   const [oaVoice, setOaVoice] = useState("alloy");
   const [musicUrl, setMusicUrl] = useState("");
   const [musicVol, setMusicVol] = useState(0.15);
@@ -777,7 +788,23 @@ DELIVERY: voiceover
   const pause = () => { playingRef.current = false; setPlaying(false); syncAudio(false); };
   const seek = (s: number) => { tRef.current = Math.max(0, Math.min(s, live.current.total)); setT(tRef.current); if (playingRef.current) syncAudio(true); };
 
-  useEffect(() => { try { localStorage.setItem("vortex-keys", JSON.stringify(keys)); } catch { /* ignore */ } }, [keys]);
+  useEffect(() => { try { localStorage.setItem("vortex-access", code); } catch { /* ignore */ } }, [code]);
+  useEffect(() => {
+    if (!code) { setServer(NO_PROVIDERS); setServerMsg(""); return undefined; }
+    const ctl = new AbortController();
+    const id = window.setTimeout(async () => {
+      try {
+        const r = await fetch("/api/status", { headers: { "x-access-code": code }, signal: ctl.signal });
+        const j = (await r.json()) as { error?: string; openai?: boolean; pexels?: boolean; pixabay?: boolean };
+        if (!r.ok) { setServer(NO_PROVIDERS); setServerMsg(j.error || `The server returned ${r.status}.`); return; }
+        setServer({ openai: !!j.openai, pexels: !!j.pexels, pixabay: !!j.pixabay });
+        setServerMsg("Connected.");
+      } catch {
+        if (!ctl.signal.aborted) { setServer(NO_PROVIDERS); setServerMsg("Could not reach the server functions. They only run on Netlify."); }
+      }
+    }, 500);
+    return () => { ctl.abort(); clearTimeout(id); };
+  }, [code]);
 
   useEffect(() => {
     const m = mediaRef.current;
@@ -1071,7 +1098,7 @@ DELIVERY: voiceover
       const reused = withPics.filter((x) => !x.clips.length).length;
       const bare = filled.filter((x) => !x.clips.length).length;
       if (reused && !bare) note += ` ${reused} scene(s) found no matching footage and reuse visuals from a neighbouring scene.`;
-      if (bare) note += ` ${bare} scene(s) have no visuals at all. Add a Pexels key under API keys and try again.`;
+      if (bare) note += ` ${bare} scene(s) have no visuals at all. Enter the access code in the Create tab for stock footage, or upload your own clips.`;
       next = filled;
       setScenes(next);
       fillMeta(r.meta, next);
@@ -1089,7 +1116,7 @@ DELIVERY: voiceover
     speechSynthesis.speak(u);
   };
   const aiVoiceOnly = async () => {
-    if (!keys.openai) { setMsg("Add an OpenAI key in the Create tab first."); return; }
+    if (!keys.openai) { setMsg("AI voiceover needs the access code in the Create tab, and an OpenAI key set on the server."); return; }
     setBusy(true);
     try { setScenes(await narrate(scenes)); setMsg("Voiceover ready."); } catch (e) { setMsg(e instanceof Error ? e.message : "Voiceover failed."); }
     setBusy(false);
@@ -1228,7 +1255,6 @@ DELIVERY: voiceover
     { ok: thumbMb !== null && thumbMb < 2, t: "Thumbnail 1280×720, under 2 MB" },
   ];
   const tabs: [Tab, string][] = [["create", "Create"], ["scenes", "Scenes"], ["audio", "Audio"], ["camera", "Camera"], ["publish", "Publish"]];
-  const setKey = (k: "pixabay" | "pexels" | "openai", v: string) => setKeys({ ...keys, [k]: v.trim() });
   const switchFmt = (f: Fmt) => { setFmt(f); setMinutes(f === "short" ? 1 : 3); setMinSec(f === "short" ? 0 : 120); };
 
   return (
@@ -1292,7 +1318,7 @@ DELIVERY: voiceover
                   <option value="stock">Stock footage (Wikimedia Commons free; Pixabay/Pexels keys optional)</option>
                 </select>
               </Field>
-              {source !== "stock" && <p className="text-xs text-slate-500">{source === "mix" ? "Each scene gets AI photos plus real video clips (video comes from Wikimedia Commons with no key, plus Pixabay if you add a free key under API keys). " : "Each scene gets AI photos that match your VISUAL lines. "}Allow about 1 to 2 minutes per scene before rendering starts.</p>}
+              {source !== "stock" && <p className="text-xs text-slate-500">{source === "mix" ? "Each scene gets AI photos plus real video clips (video comes from Wikimedia Commons with no key, plus Pexels and Pixabay when the server has their keys and you enter the access code)." : "Each scene gets AI photos that match your VISUAL lines. "}Allow about 1 to 2 minutes per scene before rendering starts.</p>}
               <label className="flex items-start gap-2 rounded-md border border-slate-800 p-2 text-xs text-slate-400">
                 <input type="checkbox" className="mt-0.5" checked={moving} onChange={(e) => setMoving(e.target.checked)} />
                 <span><b className="text-slate-200">Use moving video footage.</b> Finds multiple video clips per scene. Rich visual assets automatically fill in to pack every scene with high visual variety.</span>
@@ -1308,12 +1334,11 @@ DELIVERY: voiceover
                 </ul>
               )}
               <details className="rounded-md border border-slate-800 p-3 text-sm">
-                <summary className="cursor-pointer text-slate-300">API keys (optional)</summary>
+                <summary className="cursor-pointer text-slate-300">Server access (optional)</summary>
                 <div className="mt-3 space-y-3">
-                  <Field l="Pexels key (recommended: best photoreal video and photos)"><input type="password" className={inp} value={keys.pexels} onChange={(e) => setKey("pexels", e.target.value)} /></Field>
-                  <Field l="Pixabay key (optional backup)"><input type="password" className={inp} value={keys.pixabay} onChange={(e) => setKey("pixabay", e.target.value)} /></Field>
-                  <Field l="OpenAI key (optional for AI voiceover)"><input type="password" className={inp} value={keys.openai} onChange={(e) => setKey("openai", e.target.value)} /></Field>
-                  <p className="text-xs text-slate-500">Without a Pexels or Pixabay key, scenes use random placeholder photos that will not match your script. Pexels is not issuing new keys right now, but an existing key still works. You can also upload your own clips per scene in the Scenes tab.</p>
+                  <Field l="Access code"><input type="password" className={inp} value={code} onChange={(e) => setCode(e.target.value.trim())} /></Field>
+                  {serverMsg && <p className="text-xs text-slate-300">{serverMsg}{serverMsg === "Connected." && ` AI voiceover: ${server.openai ? "on" : "off"}. Pexels: ${server.pexels ? "on" : "off"}. Pixabay: ${server.pixabay ? "on" : "off"}.`}</p>}
+                  <p className="text-xs text-slate-500">Provider keys now live on the server (Netlify) and never reach this browser. Enter the access code you set there to unlock AI voiceover and Pexels or Pixabay stock footage. Without it, the app still uses free AI images, Wikimedia Commons footage and your own uploads. You can also upload your own clips per scene in the Scenes tab.</p>
                 </div>
               </details>
             </>)}
