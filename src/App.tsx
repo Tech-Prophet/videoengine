@@ -34,8 +34,8 @@ const SHOT_SECONDS_VIDEO = 5;
 const shotCount = (dur: number, vid = false) => (vid ? Math.max(2, Math.min(8, Math.ceil(dur / SHOT_SECONDS_VIDEO))) : Math.max(3, Math.min(12, Math.ceil(dur / SHOT_SECONDS))));
 
 const MIME_CANDIDATES = [
-  "video/webm;codecs=vp9,opus",
   "video/webm;codecs=vp8,opus",
+  "video/webm;codecs=vp9,opus",
   "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
   "video/webm",
 ];
@@ -920,11 +920,17 @@ DELIVERY: voiceover
     setTimeout(done, 1500);
   });
 
-  const exportVideo = async () => {
+  const exportVideo = async (attempt = 0): Promise<void> => {
     const c = canvasRef.current;
-    const mime = MIME_CANDIDATES.find((m) => MediaRecorder.isTypeSupported(m));
     if (!c || !live.current.total) return;
-    if (!mime) { setMsg("This browser can't record video. Use desktop Chrome or Edge."); return; }
+    if (typeof MediaRecorder === "undefined") { setMsg("This browser can't record video. Use desktop Chrome or Edge."); return; }
+    // First attempt: preferred codecs, with audio only if the video actually has an audio source.
+    // Retry: browser-default codec and no audio track, which works on most phones.
+    const hasAudio = attempt === 0 && (Object.keys(tracks.current).length > 0 || live.current.scenes.some((s) => s.onCam));
+    const mime = attempt === 0
+      ? MIME_CANDIDATES.map((m) => (hasAudio ? m : m.replace(/,(?:opus|mp4a[^,]*)$/, ""))).find((m) => MediaRecorder.isTypeSupported(m))
+      : undefined;
+    if (attempt === 0 && !mime) { setMsg("This browser can't record video. Use desktop Chrome or Edge."); return; }
     pause(); setFile(null); setExporting(true); setStage(4);
     const t0 = performance.now();
     while (performance.now() - t0 < 25000) {
@@ -937,14 +943,18 @@ DELIVERY: voiceover
     await Promise.all(Object.values(tracks.current).map((T) => rewind(T.el)));
     const ac = ensureAc();
     await ac.resume();
-    const dest = ac.createMediaStreamDestination();
-    const outs = [...Object.values(tracks.current).map((T) => T.gain), ...(clipGain.current ? [clipGain.current] : [])];
-    outs.forEach((g) => g.connect(dest));
+    if (hasAudio && live.current.scenes.some((s) => s.onCam)) getClipGain();
+    const dest = hasAudio ? ac.createMediaStreamDestination() : null;
+    const outs = hasAudio ? [...Object.values(tracks.current).map((T) => T.gain), ...(clipGain.current ? [clipGain.current] : [])] : [];
+    if (dest) outs.forEach((g) => g.connect(dest));
     const stream = c.captureStream(fps);
-    dest.stream.getAudioTracks().forEach((a) => stream.addTrack(a));
-    const r = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: res >= 1440 ? 12e6 : res >= 1080 ? 6e6 : 3e6 });
+    if (dest) dest.stream.getAudioTracks().forEach((a) => stream.addTrack(a));
+    const opts: MediaRecorderOptions = { videoBitsPerSecond: res >= 1440 ? 12e6 : res >= 1080 ? 6e6 : 3e6 };
+    if (mime) opts.mimeType = mime;
+    const r = new MediaRecorder(stream, opts);
     const chunks: Blob[] = [];
-    r.onerror = () => setMsg("The browser's recorder failed. Try 720p, or use desktop Chrome.");
+    let recErr = "";
+    r.onerror = (e) => { recErr = (e as Event & { error?: DOMException }).error?.name || "unknown error"; };
     let hidden = document.hidden;
     const onVis = () => { if (document.hidden) hidden = true; };
     document.addEventListener("visibilitychange", onVis);
@@ -955,17 +965,24 @@ DELIVERY: voiceover
       clearTimeout(safety);
       document.removeEventListener("visibilitychange", onVis);
       exportStart.current = null;
-      outs.forEach((g) => { try { g.disconnect(dest); } catch { /* ignore */ } });
-      const blob = new Blob(chunks, { type: mime.split(";")[0] });
+      if (dest) outs.forEach((g) => { try { g.disconnect(dest); } catch { /* ignore */ } });
+      const type = (mime ?? (r.mimeType || "video/webm")).split(";")[0];
+      const blob = new Blob(chunks, { type });
       if (blob.size < 50_000) {
+        if (attempt === 0) {
+          setExporting(false);
+          setMsg("First recording was empty. Retrying in a simpler mode (no audio in the file). Keep this tab in front.");
+          void exportVideo(1);
+          return;
+        }
         setFile(null); setExporting(false); setStage(0);
-        setMsg("Recording failed (empty file). Use 720p at 30 fps, keep this tab in front, or try desktop Chrome.");
+        setMsg(`Recording failed (empty file${recErr ? `, ${recErr}` : ""}). Try desktop Chrome or Edge.`);
         return;
       }
       const took = (performance.now() - began) / 1000;
-      setFile({ url: URL.createObjectURL(blob), name: `vortex-${fmt}-${res}p.${mime.startsWith("video/mp4") ? "mp4" : "webm"}`, mb: blob.size / 1e6 });
+      setFile({ url: URL.createObjectURL(blob), name: `vortex-${fmt}-${res}p.${type === "video/mp4" ? "mp4" : "webm"}`, mb: blob.size / 1e6 });
       setExporting(false); setStage(5);
-      setMsg(`Recorded ${clock(took)} of ${clock(live.current.total)} planned.${hidden ? " The tab was hidden while rendering, so the video may be incomplete." : ""}`);
+      setMsg(`Recorded ${clock(took)} of ${clock(live.current.total)} planned.${hidden ? " The tab was hidden while rendering, so the video may be incomplete." : ""}${attempt > 0 ? " Saved without audio." : ""}`);
     };
     onEnd.current = () => { onEnd.current = null; setTimeout(() => { if (r.state !== "inactive") r.stop(); }, 400); };
     const vEl = tracks.current.voice?.el;
@@ -1020,7 +1037,7 @@ DELIVERY: voiceover
         </select>
         <span className="text-xs sm:text-sm text-slate-400 hidden md:inline">{W}×{H} · {clock(total)}</span>
         <div className="ml-auto flex items-center gap-2 sm:gap-3">
-          {msg && <span className="max-w-[120px] sm:max-w-xs truncate text-xs text-slate-400 hidden sm:inline" title={msg}>{msg}</span>}
+          {msg && <span className="basis-full text-xs text-amber-300 sm:basis-auto sm:max-w-xs sm:truncate sm:text-slate-400" title={msg}>{msg}</span>}
           {file && <a href={file.url} download={file.name} className={`${btn(true)} text-xs sm:text-sm`}>Download {file.mb.toFixed(1)} MB</a>}
           <button onClick={() => void exportVideo()} disabled={exporting || busy} className={`${btn()} text-xs sm:text-sm`}>{exporting ? `Rendering ${Math.round((t / (total || 1)) * 100)}%` : "Re-render"}</button>
         </div>
