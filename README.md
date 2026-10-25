@@ -1,32 +1,61 @@
-# React + TypeScript + Vite
+# Vortex AI Studio
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+A browser-based video maker. Paste a script, and it splits it into scenes, finds or generates pictures and clips for each scene, adds captions and voiceover, and records the finished video.
 
-Currently, two official plugins are available:
+## What it does today
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- Turns a pasted script (Markdown or JSON) into editable scenes with a timeline and live preview.
+- Finds visuals per scene: free AI photos (Pollinations), stock video and photos (Wikimedia Commons with no key; Pexels and Pixabay when the server has their keys), or your own uploads. Every scene can mix them.
+- Voiceover: AI voice through OpenAI (server key), your own recording, or an uploaded file. Background music upload.
+- Burned-in captions, intro text, slow zoom and pan, crossfades, and a camera and microphone recorder.
+- Publish tab: title, description, tags, thumbnail (with download), and a checklist.
+- Export: records the preview in your browser to a video file.
+- Your script, scenes and settings are saved in the browser. Pictures, clips and audio are not saved and are fetched again after a refresh.
 
-## React Compiler
+It does **not** generate AI video yet. See "Roadmap".
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## How secret keys are handled
 
-## Expanding the Oxlint configuration
+API keys never go in the browser. Three Netlify Functions hold them on the server:
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
+| Function | Purpose | Needs |
+| --- | --- | --- |
+| `/api/tts` | AI voiceover | `OPENAI_API_KEY` |
+| `/api/stock` | Pexels and Pixabay search | `PEXELS_API_KEY`, `PIXABAY_API_KEY` |
+| `/api/status` | Tells the app which keys exist (true or false only) | none |
 
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+Every call must carry the `ACCESS_CODE` you choose. If `ACCESS_CODE` is not set on the server, the functions refuse everything, so a public site cannot spend your credit by accident.
+
+## Set up on Netlify
+
+1. Connect this repository to a Netlify site. Build settings come from `netlify.toml`.
+2. In Netlify, open Site configuration, then Environment variables, and add the names from `.env.example`. Only `ACCESS_CODE` is required to start; add each provider key you have.
+3. Redeploy so the functions see the new variables.
+4. In the app, open the Create tab, open "Server access", and enter the same access code. It should say "Connected" and show which providers are on.
+
+Never commit a real `.env` file. `.gitignore` already blocks it.
+
+## Run locally
+
+```
+npm install
+npm run dev
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+The functions only run on Netlify, so locally the app shows "Could not reach the server functions". AI photos, Wikimedia footage and uploads still work. To run the functions locally you can use the Netlify CLI (`npx netlify dev`) with a local `.env` file.
+
+Other commands: `npm run build` (type-check and build) and `npm run lint`.
+
+## Known limits
+
+- Export records in real time, so the tab must stay open and in front for the full length of the video. The file is WebM on most browsers; MP4 only where the browser records it.
+- Pollinations is used without a key. Its current free limits and commercial-use terms have not been verified.
+- Live calls to OpenAI, Pexels and Pixabay have not been tested end to end. The functions have local mock tests only.
+- Some clips need their credit in the video description; the app adds Wikimedia Commons credits automatically.
+
+## Roadmap
+
+1. Image-generation provider adapters (Cloudflare Workers AI FLUX first, with Pollinations as fallback).
+2. Optional AI video through a user-supplied key (paid providers), with clear labels for AI, stock and uploaded media.
+3. In-app script writing, with edit and regenerate per scene.
+4. Job queue with retry, and saved media.

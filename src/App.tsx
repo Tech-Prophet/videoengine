@@ -440,6 +440,24 @@ const borrowVisuals = (list: Scene[]): Scene[] =>
     return best ? { ...sc, clips: best.clips } : sc;
   });
 
+/* ---------- SAVED PROJECT (this browser only) ---------- */
+// Saves the script, scene text, durations and settings. Pictures, clips and audio are NOT saved,
+// because they live in memory; they are fetched or recorded again.
+const SAVE_KEY = "vortex-project";
+type Saved = {
+  v: 1; fmt: Fmt; res: number; fps: number; wpm: number; topic: string; tone: string; minutes: number; minSec: number;
+  scriptText: string; intro: string; source: Source; moving: boolean; caps: boolean;
+  vTitle: string; vDesc: string; vTags: string; thumbText: string;
+  scenes: Omit<Scene, "clips" | "marks">[];
+};
+function loadSaved(): Saved | null {
+  try {
+    const d = JSON.parse(localStorage.getItem(SAVE_KEY) || "null") as Partial<Saved> | null;
+    if (!d || d.v !== 1 || !Array.isArray(d.scenes) || !d.scenes.length) return null;
+    return d as Saved;
+  } catch { return null; }
+}
+
 /* ---------- NARRATION ---------- */
 async function speak(key: string, text: string, voice: string) {
   for (let a = 0; a < 3; a++) {
@@ -653,28 +671,32 @@ const Field = ({ l, children }: { l: string; children: ReactNode }) => (
 const STEPS = ["Read script", "Record narration", "Find visuals", "Render video"];
 
 export default function App() {
-  const [fmt, setFmt] = useState<Fmt>("long");
-  const [res, setRes] = useState(1080);
-  const [fps, setFps] = useState(30);
-  const [wpm, setWpm] = useState(150);
+  const [saved] = useState(loadSaved);
+  const [fmt, setFmt] = useState<Fmt>(saved?.fmt ?? "long");
+  const [res, setRes] = useState(saved?.res ?? 1080);
+  const [fps, setFps] = useState(saved?.fps ?? 30);
+  const [wpm, setWpm] = useState(saved?.wpm ?? 150);
   const [tab, setTab] = useState<Tab>("create");
-  const [topic, setTopic] = useState("");
-  const [tone, setTone] = useState("Friendly");
-  const [minutes, setMinutes] = useState(3);
-  const [minSec, setMinSec] = useState(120);
-  const [scriptText, setScriptText] = useState("");
-  const [intro, setIntro] = useState("Vortex AI Studio");
-  const [scenes, setScenes] = useState<Scene[]>(() => [mkScene({ title: "Hook", text: "Paste a script in the Create tab and press Generate video.", onScreen: "", visual: "" }, 0, 150)]);
+  const [topic, setTopic] = useState(saved?.topic ?? "");
+  const [tone, setTone] = useState(saved?.tone ?? "Friendly");
+  const [minutes, setMinutes] = useState(saved?.minutes ?? 3);
+  const [minSec, setMinSec] = useState(saved?.minSec ?? 120);
+  const [scriptText, setScriptText] = useState(saved?.scriptText ?? "");
+  const [intro, setIntro] = useState(saved?.intro ?? "Vortex AI Studio");
+  const [scenes, setScenes] = useState<Scene[]>(() =>
+    saved
+      ? saved.scenes.map((s) => ({ ...s, onCam: false, clips: [] }))
+      : [mkScene({ title: "Hook", text: "Paste a script in the Create tab and press Generate video.", onScreen: "", visual: "" }, 0, 150)]);
   const [selId, setSelId] = useState("");
   const [playing, setPlaying] = useState(false);
   const [t, setT] = useState(0);
-  const [caps, setCaps] = useState(true);
+  const [caps, setCaps] = useState(saved?.caps ?? true);
   const [safe, setSafe] = useState(true);
   const [busy, setBusy] = useState(false);
   const [stage, setStage] = useState(0);
   const [autoRender, setAutoRender] = useState(false);
-  const [moving, setMoving] = useState(true);
-  const [source, setSource] = useState<Source>("mix");
+  const [moving, setMoving] = useState(saved?.moving ?? true);
+  const [source, setSource] = useState<Source>(saved?.source ?? "mix");
   const aiSt = useRef<AiState>({ fails: 0 });
   const creditsRef = useRef<string[]>([]);
   const [msg, setMsg] = useState("");
@@ -696,10 +718,10 @@ export default function App() {
   const [recording, setRecording] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [file, setFile] = useState<{ url: string; name: string; mb: number } | null>(null);
-  const [vTitle, setVTitle] = useState("");
-  const [vDesc, setVDesc] = useState("");
-  const [vTags, setVTags] = useState("");
-  const [thumbText, setThumbText] = useState("");
+  const [vTitle, setVTitle] = useState(saved?.vTitle ?? "");
+  const [vDesc, setVDesc] = useState(saved?.vDesc ?? "");
+  const [vTags, setVTags] = useState(saved?.vTags ?? "");
+  const [thumbText, setThumbText] = useState(saved?.thumbText ?? "");
   const [thumbMb, setThumbMb] = useState<number | null>(null);
   const [thumbClip, setThumbClip] = useState("");
   const [thumbBump, setThumbBump] = useState(0);
@@ -789,6 +811,18 @@ DELIVERY: voiceover
   const seek = (s: number) => { tRef.current = Math.max(0, Math.min(s, live.current.total)); setT(tRef.current); if (playingRef.current) syncAudio(true); };
 
   useEffect(() => { try { localStorage.setItem("vortex-access", code); } catch { /* ignore */ } }, [code]);
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      try {
+        const data: Saved = {
+          v: 1, fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, vTitle, vDesc, vTags, thumbText,
+          scenes: scenes.map((s) => ({ id: s.id, title: s.title, text: s.text, onScreen: s.onScreen, visual: s.visual, duration: s.duration, palette: s.palette })),
+        };
+        localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+      } catch { /* storage full or blocked: skip */ }
+    }, 800);
+    return () => clearTimeout(id);
+  }, [fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, vTitle, vDesc, vTags, thumbText, scenes]);
   useEffect(() => {
     if (!code) { setServer(NO_PROVIDERS); setServerMsg(""); return undefined; }
     const ctl = new AbortController();
@@ -993,6 +1027,14 @@ DELIVERY: voiceover
     drawFrame(ctx, L, i, tt, (u) => mediaRef.current[u]);
     frameRef.current = c; setThumbBump(0); setThumbClip("frame");
     setMsg("Thumbnail picture set from preview frame.");
+  };
+  const downloadThumb = async () => {
+    const c = thumbRef.current;
+    const bl = c ? await thumbBlob(c) : null;
+    if (!bl) { setMsg("Could not make the thumbnail file. Wait for the preview to load, then try again."); return; }
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(bl); a.download = "thumbnail.jpg"; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   };
   const copyPrompt = async () => {
     try { await navigator.clipboard.writeText(aiPrompt); setMsg("Prompt copied. Paste it into Claude or ChatGPT, then paste the reply in Step 2."); }
@@ -1325,6 +1367,8 @@ DELIVERY: voiceover
               </label>
               <button className={`${btn(true)} w-full !py-2.5`} disabled={busy || exporting} onClick={generateVideo}>{busy || exporting ? "Working…" : "Generate video"}</button>
               <button className={`${btn()} w-full`} disabled={busy || exporting} onClick={loadOnly}>Load script into scenes only</button>
+              <button className={`${btn()} w-full`} disabled={busy || exporting} onClick={() => { if (window.confirm("Clear the saved project and start fresh?")) { try { localStorage.removeItem(SAVE_KEY); } catch { /* ignore */ } window.location.reload(); } }}>Start a new project</button>
+              <p className="text-xs text-slate-500">Your script, scenes and settings are saved in this browser. Pictures, clips and audio are not saved, so they are fetched again after a refresh.</p>
               {stage > 0 && (
                 <ul className="space-y-1 text-sm">
                   {STEPS.map((s, i) => {
@@ -1404,6 +1448,7 @@ DELIVERY: voiceover
               <Field l="Thumbnail text"><input className={inp} value={thumbText} onChange={(e) => setThumbText(e.target.value)} placeholder="3–5 words" /></Field>
               <canvas ref={thumbRef} width={1280} height={720} className="w-full rounded-md" />
               <button className={btn()} onClick={grabFrame}>Use current preview frame</button>
+              <button className={btn()} onClick={() => void downloadThumb()}>Download thumbnail</button>
               <ul className="space-y-1 text-xs">
                 {checks.map((c) => <li key={c.t} className={c.ok ? "text-emerald-400" : "text-slate-500"}>{c.ok ? "✓" : "○"} {c.t}</li>)}
               </ul>
