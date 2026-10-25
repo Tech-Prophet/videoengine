@@ -190,16 +190,6 @@ async function stockImages(key: string, groups: { q: string; cap: number }[], f:
       } catch { /* fall back to placeholder photos below */ }
     }
   }
-  if (urls.length < n) {
-    const [w, h] = dims(f, 1080);
-    while (urls.length < n) {
-      const idx = urls.length;
-      const g = groups[idx % groups.length];
-      const q = g ? g.q : "dynamic content";
-      const seed = encodeURIComponent(`${q}-${idx}-${Math.random()}`);
-      urls.push(`https://picsum.photos/seed/${seed}/${w}/${h}`);
-    }
-  }
   return (await Promise.all(urls.map(fetchPhoto))).filter((u): u is string => !!u);
 }
 
@@ -209,7 +199,7 @@ async function stockVideos(key: string, groups: { q: string; cap: number }[], n:
   for (const g of groups) {
     if (!g.q || urls.length >= n) continue;
     try {
-      const r = await fetch(`https://pixabay.com/api/videos/?key=${encodeURIComponent(key)}&q=${encodeURIComponent(g.q)}&video_type=film&min_width=1280&safesearch=true&per_page=${Math.min(50, n + 8)}`);
+      const r = await fetch(`https://pixabay.com/api/videos/?key=${encodeURIComponent(key)}&q=${encodeURIComponent(g.q)}&safesearch=true&per_page=${Math.min(50, n + 8)}`);
       if (!r.ok) continue;
       let taken = 0;
       for (const p of (await r.json()).hits ?? []) {
@@ -293,11 +283,11 @@ type AiState = { fails: number };
 const ANGLES = ["wide establishing shot", "close-up detail", "medium shot with natural action", "low angle dramatic view", "aerial view", "soft focus foreground depth"];
 const aiShots = (dur: number) => Math.max(3, Math.min(6, Math.ceil(dur / 8)));
 // Free, keyless photoreal image generation. Fails safe: after 3 failed images it stops trying for the rest of the run.
-async function aiImages(queries: string[], topic: string, f: Fmt, n: number, st: AiState): Promise<string[]> {
+async function aiImages(queries: string[], topic: string, f: Fmt, n: number, st: AiState, narr: string[] = []): Promise<string[]> {
   if (n <= 0 || !queries.length) return [];
   const [w, h] = f === "long" ? [1280, 720] : [720, 1280];
   const one = async (i: number): Promise<string | null> => {
-    const prompt = `${queries[i % queries.length]}, ${topic}, ${ANGLES[i % ANGLES.length]}, ultra realistic professional photograph, natural lighting, sharp focus, high detail, no text, no watermark`;
+    const prompt = `${narr[i] ? `Scene: ${narr[i]}. ` : ""}${queries[i % queries.length]}, ${topic}, ${ANGLES[i % ANGLES.length]}, ultra realistic professional photograph, natural lighting, sharp focus, high detail, no text, no watermark`;
     const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${w}&height=${h}&model=flux&nologo=true&seed=${Math.floor(Math.random() * 1e6)}`;
     for (let a = 0; a < 2; a++) {
       const ctl = new AbortController();
@@ -324,7 +314,16 @@ async function aiImages(queries: string[], topic: string, f: Fmt, n: number, st:
 type Source = "ai" | "stock" | "mix";
 const shotsFor = (src: Source, dur: number, moving: boolean) => (src === "ai" ? aiShots(dur) : src === "mix" ? Math.max(4, Math.min(8, Math.ceil(dur / 7))) : shotCount(dur, moving));
 type Gather = { keys: { pixabay: string; pexels: string }; source: Source; topic: string; f: Fmt; res: number; moving: boolean; st: AiState };
+// The sentence being narrated at a given point (0 to 1) of a scene, used to make AI pictures match the story.
+const narrAt = (text: string, frac: number) => {
+  const ss = sentencesOf(text);
+  if (!ss.length) return "";
+  const x = ss[Math.min(ss.length - 1, Math.floor(Math.max(0, frac) * ss.length))];
+  return x.length > 140 ? x.slice(0, 140) : x;
+};
 async function gatherClips(o: Gather, sc: Scene, n: number): Promise<Clip[]> {
+  const own = sc.visual.split("|").map((x) => x.trim()).filter(Boolean);
+  const qs = own.length ? own : [sc.title];
   if (o.source === "mix") {
     // Half real stock video, half AI photos, interleaved so every scene has both moving video and images.
     const vids: string[] = [];
@@ -334,8 +333,10 @@ async function gatherClips(o: Gather, sc: Scene, n: number): Promise<Clip[]> {
       if (o.keys.pexels) vids.push(...(await pexelsVideos(o.keys.pexels, groups, o.f, want, o.res)));
       if (vids.length < want && o.keys.pixabay) vids.push(...(await stockVideos(o.keys.pixabay, groups, want - vids.length, o.res >= 1080 ? "medium" : "small")));
     }
-    const own = sc.visual.split("|").map((x) => x.trim()).filter(Boolean);
-    const imgs = await aiImages(own.length ? own : [sc.title], o.topic, o.f, n - vids.length, o.st);
+    const nImg = n - vids.length;
+    const slot = (i: number) => (i < vids.length ? 2 * i + 1 : vids.length + i);
+    const narr = Array.from({ length: nImg }, (_, i) => narrAt(sc.text, slot(i) / Math.max(1, n)));
+    const imgs = await aiImages(qs, o.topic, o.f, nImg, o.st, narr);
     const mixed: Clip[] = [];
     for (let i = 0; i < Math.max(vids.length, imgs.length); i++) {
       if (i < vids.length) mixed.push({ url: vids[i], kind: "video" });
@@ -345,22 +346,32 @@ async function gatherClips(o: Gather, sc: Scene, n: number): Promise<Clip[]> {
   }
   const out: Clip[] = [];
   const hasStockKey = !!(o.keys.pexels || o.keys.pixabay);
-  if (o.source === "ai") {
-    const own = sc.visual.split("|").map((x) => x.trim()).filter(Boolean);
-    (await aiImages(own.length ? own : [sc.title], o.topic, o.f, n, o.st)).forEach((url) => out.push({ url, kind: "image" }));
-  }
-  // Stock footage: the main source in "stock" mode, and a top-up in "ai" mode (only when a stock key exists, so no random placeholders).
-  if (out.length < n && (o.source === "stock" || hasStockKey)) {
+  const ai = async (count: number, offset: number) => {
+    const narr = Array.from({ length: count }, (_, i) => narrAt(sc.text, (offset + i) / Math.max(1, n)));
+    (await aiImages(qs, o.topic, o.f, count, o.st, narr)).forEach((url) => out.push({ url, kind: "image" }));
+  };
+  if (o.source === "ai") await ai(n, 0);
+  if (out.length < n && hasStockKey) {
     const need = n - out.length;
     try { out.push(...(await stockFootage(o.keys, photoGroups(sc, o.topic, need), o.f, need, o.res, o.moving))); }
     catch (e) { if (!out.length) throw e; }
   }
+  // Stock mode: any gap is filled with AI pictures made from the narration, never random photos.
+  if (o.source === "stock" && out.length < n) await ai(n - out.length, out.length);
   return out;
 }
+// Keyword searches only: the scene's own VISUAL lines and shorter versions of them. Generic title/topic searches are used only when a scene has no VISUAL line.
+const FILLER = /^(aerial|view|shot|close-up|closeup|wide|medium|slow|footage|scene)$/i;
 const photoGroups = (s: Scene, topic: string, n: number) => {
   const own = s.visual.split("|").map((x) => x.trim()).filter(Boolean);
   const per = Math.ceil(n / Math.max(1, own.length));
-  return [...own.map((q) => ({ q, cap: per })), { q: s.title, cap: n }, { q: topic, cap: n }];
+  const seen = new Set<string>();
+  const out: { q: string; cap: number }[] = [];
+  const add = (q: string, cap: number) => { const k = q.trim().toLowerCase(); if (k && !seen.has(k)) { seen.add(k); out.push({ q: q.trim(), cap }); } };
+  own.forEach((q) => add(q, per));
+  own.forEach((q) => { const w = words(q).filter((x) => !FILLER.test(x)); add(w.slice(-2).join(" "), per); add(w.slice(0, 2).join(" "), per); });
+  if (!own.length) { add(s.title, n); add(topic, n); }
+  return out;
 };
 
 const borrowVisuals = (list: Scene[]): Scene[] =>
