@@ -164,7 +164,9 @@ function parseScript(src: string): Parsed {
 
 /* ---------- PHOTOS & RICH VISUAL FALLBACK ---------- */
 async function fetchPhoto(url: string): Promise<string | null> {
-  try { const r = await fetch(url); if (r.ok) return URL.createObjectURL(await r.blob()); } catch { /* fall through */ }
+  for (let a = 0; a < 2; a++) {
+    try { const r = await fetch(url); if (r.ok) return URL.createObjectURL(await r.blob()); } catch { /* retry once, then fall through */ }
+  }
   try {
     await new Promise<void>((ok, bad) => { const im = new Image(); im.crossOrigin = "anonymous"; im.onload = () => ok(); im.onerror = () => bad(new Error("blocked")); im.src = url; });
     return url;
@@ -207,7 +209,7 @@ async function stockVideos(key: string, groups: { q: string; cap: number }[], n:
   for (const g of groups) {
     if (!g.q || urls.length >= n) continue;
     try {
-      const r = await fetch(`https://pixabay.com/api/videos/?key=${encodeURIComponent(key)}&q=${encodeURIComponent(g.q)}&safesearch=true&per_page=${Math.min(50, n + 8)}`);
+      const r = await fetch(`https://pixabay.com/api/videos/?key=${encodeURIComponent(key)}&q=${encodeURIComponent(g.q)}&video_type=film&min_width=1280&safesearch=true&per_page=${Math.min(50, n + 8)}`);
       if (!r.ok) continue;
       let taken = 0;
       for (const p of (await r.json()).hits ?? []) {
@@ -225,11 +227,132 @@ async function stockVideos(key: string, groups: { q: string; cap: number }[], n:
   }))).filter((u): u is string => !!u);
 }
 
-async function stockFootage(key: string, groups: { q: string; cap: number }[], f: Fmt, n: number, res: number, video: boolean): Promise<Clip[]> {
+type PxFile = { file_type?: string; width?: number; height?: number; link?: string };
+const blobUrl = async (u: string): Promise<string | null> => {
+  try { const r = await fetch(u); if (r.ok) return URL.createObjectURL(await r.blob()); } catch { /* skip */ }
+  return null;
+};
+async function pexelsVideos(key: string, groups: { q: string; cap: number }[], f: Fmt, n: number, res: number): Promise<string[]> {
+  if (!key || n <= 0) return [];
+  const seen = new Set<number>(), links: string[] = [];
+  const want = res >= 1440 ? 1920 : 1280;
+  const side = (x: PxFile) => Math.max(x.width ?? 0, x.height ?? 0);
+  for (const g of groups) {
+    if (!g.q || links.length >= n) continue;
+    try {
+      const r = await fetch(`https://api.pexels.com/videos/search?query=${encodeURIComponent(g.q)}&orientation=${f === "long" ? "landscape" : "portrait"}&per_page=${Math.min(40, n + 8)}`, { headers: { Authorization: key } });
+      if (!r.ok) continue;
+      let taken = 0;
+      for (const v of (await r.json()).videos ?? []) {
+        if (links.length >= n || taken >= g.cap) break;
+        if (seen.has(v.id) || (v.duration && v.duration < 4)) continue;
+        const files = ((v.video_files ?? []) as PxFile[]).filter((x) => x.link && x.file_type === "video/mp4" && x.width && x.height);
+        const pick = files.filter((x) => side(x) >= want).sort((x, y) => side(x) - side(y))[0] ?? files.sort((x, y) => side(y) - side(x))[0];
+        if (!pick?.link) continue;
+        seen.add(v.id); taken++; links.push(pick.link);
+      }
+    } catch { /* try next search */ }
+  }
+  return (await Promise.all(links.map(blobUrl))).filter((u): u is string => !!u);
+}
+async function pexelsPhotos(key: string, groups: { q: string; cap: number }[], f: Fmt, n: number): Promise<string[]> {
+  if (!key || n <= 0) return [];
+  const seen = new Set<number>(), urls: string[] = [];
+  for (const g of groups) {
+    if (!g.q || urls.length >= n) continue;
+    try {
+      const r = await fetch(`https://api.pexels.com/v1/search?query=${encodeURIComponent(g.q)}&orientation=${f === "long" ? "landscape" : "portrait"}&per_page=${Math.min(40, n + 6)}`, { headers: { Authorization: key } });
+      if (!r.ok) continue;
+      let taken = 0;
+      for (const p of (await r.json()).photos ?? []) {
+        if (urls.length >= n || taken >= g.cap) break;
+        if (seen.has(p.id)) continue;
+        const u = p.src?.large2x || p.src?.large;
+        if (!u) continue;
+        seen.add(p.id); taken++; urls.push(u as string);
+      }
+    } catch { /* try next search */ }
+  }
+  return (await Promise.all(urls.map(fetchPhoto))).filter((u): u is string => !!u);
+}
+
+// Order: Pexels video, Pixabay video, Pexels photos, Pixabay photos, then placeholders so a scene is never empty.
+async function stockFootage(k: { pixabay: string; pexels: string }, groups: { q: string; cap: number }[], f: Fmt, n: number, res: number, video: boolean): Promise<Clip[]> {
   const out: Clip[] = [];
-  if (key && video) (await stockVideos(key, groups, n, res >= 1080 ? "medium" : "small")).forEach((url) => out.push({ url, kind: "video" }));
+  const add = (urls: string[], kind: Clip["kind"]) => urls.forEach((url) => { if (out.length < n) out.push({ url, kind }); });
+  if (video && k.pexels) add(await pexelsVideos(k.pexels, groups, f, n, res), "video");
+  if (video && k.pixabay && out.length < n) add(await stockVideos(k.pixabay, groups, n - out.length, res >= 1080 ? "medium" : "small"), "video");
+  if (out.length < n && k.pexels) add(await pexelsPhotos(k.pexels, groups, f, n - out.length), "image");
   if (out.length < n) {
-    try { (await stockImages(key, groups, f, n - out.length)).forEach((url) => out.push({ url, kind: "image" })); }
+    try { add(await stockImages(k.pixabay, groups, f, n - out.length), "image"); }
+    catch (e) { if (!out.length) throw e; }
+  }
+  return out;
+}
+type AiState = { fails: number };
+const ANGLES = ["wide establishing shot", "close-up detail", "medium shot with natural action", "low angle dramatic view", "aerial view", "soft focus foreground depth"];
+const aiShots = (dur: number) => Math.max(3, Math.min(6, Math.ceil(dur / 8)));
+// Free, keyless photoreal image generation. Fails safe: after 3 failed images it stops trying for the rest of the run.
+async function aiImages(queries: string[], topic: string, f: Fmt, n: number, st: AiState): Promise<string[]> {
+  if (n <= 0 || !queries.length) return [];
+  const [w, h] = f === "long" ? [1280, 720] : [720, 1280];
+  const one = async (i: number): Promise<string | null> => {
+    const prompt = `${queries[i % queries.length]}, ${topic}, ${ANGLES[i % ANGLES.length]}, ultra realistic professional photograph, natural lighting, sharp focus, high detail, no text, no watermark`;
+    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${w}&height=${h}&model=flux&nologo=true&seed=${Math.floor(Math.random() * 1e6)}`;
+    for (let a = 0; a < 2; a++) {
+      const ctl = new AbortController();
+      const to = window.setTimeout(() => ctl.abort(), 60000);
+      try {
+        const r = await fetch(url, { signal: ctl.signal });
+        if (r.ok && (r.headers.get("content-type") || "").startsWith("image")) {
+          const b = await r.blob();
+          if (b.size > 5000) { clearTimeout(to); return URL.createObjectURL(b); }
+        }
+      } catch { /* retry once */ }
+      clearTimeout(to);
+    }
+    st.fails++;
+    return null;
+  };
+  const out: string[] = [];
+  for (let i = 0; i < n && st.fails < 3; i += 2) {
+    const got = await Promise.all([i, i + 1].filter((k) => k < n).map(one));
+    got.forEach((u) => { if (u) out.push(u); });
+  }
+  return out;
+}
+type Source = "ai" | "stock" | "mix";
+const shotsFor = (src: Source, dur: number, moving: boolean) => (src === "ai" ? aiShots(dur) : src === "mix" ? Math.max(4, Math.min(8, Math.ceil(dur / 7))) : shotCount(dur, moving));
+type Gather = { keys: { pixabay: string; pexels: string }; source: Source; topic: string; f: Fmt; res: number; moving: boolean; st: AiState };
+async function gatherClips(o: Gather, sc: Scene, n: number): Promise<Clip[]> {
+  if (o.source === "mix") {
+    // Half real stock video, half AI photos, interleaved so every scene has both moving video and images.
+    const vids: string[] = [];
+    const want = o.moving ? Math.floor(n / 2) : 0;
+    if (want > 0) {
+      const groups = photoGroups(sc, o.topic, want);
+      if (o.keys.pexels) vids.push(...(await pexelsVideos(o.keys.pexels, groups, o.f, want, o.res)));
+      if (vids.length < want && o.keys.pixabay) vids.push(...(await stockVideos(o.keys.pixabay, groups, want - vids.length, o.res >= 1080 ? "medium" : "small")));
+    }
+    const own = sc.visual.split("|").map((x) => x.trim()).filter(Boolean);
+    const imgs = await aiImages(own.length ? own : [sc.title], o.topic, o.f, n - vids.length, o.st);
+    const mixed: Clip[] = [];
+    for (let i = 0; i < Math.max(vids.length, imgs.length); i++) {
+      if (i < vids.length) mixed.push({ url: vids[i], kind: "video" });
+      if (i < imgs.length) mixed.push({ url: imgs[i], kind: "image" });
+    }
+    return mixed;
+  }
+  const out: Clip[] = [];
+  const hasStockKey = !!(o.keys.pexels || o.keys.pixabay);
+  if (o.source === "ai") {
+    const own = sc.visual.split("|").map((x) => x.trim()).filter(Boolean);
+    (await aiImages(own.length ? own : [sc.title], o.topic, o.f, n, o.st)).forEach((url) => out.push({ url, kind: "image" }));
+  }
+  // Stock footage: the main source in "stock" mode, and a top-up in "ai" mode (only when a stock key exists, so no random placeholders).
+  if (out.length < n && (o.source === "stock" || hasStockKey)) {
+    const need = n - out.length;
+    try { out.push(...(await stockFootage(o.keys, photoGroups(sc, o.topic, need), o.f, need, o.res, o.moving))); }
     catch (e) { if (!out.length) throw e; }
   }
   return out;
@@ -239,6 +362,14 @@ const photoGroups = (s: Scene, topic: string, n: number) => {
   const per = Math.ceil(n / Math.max(1, own.length));
   return [...own.map((q) => ({ q, cap: per })), { q: s.title, cap: n }, { q: topic, cap: n }];
 };
+
+const borrowVisuals = (list: Scene[]): Scene[] =>
+  list.map((sc, i) => {
+    if (sc.clips.length) return sc;
+    let best: Scene | undefined, bd = Infinity;
+    for (let j = 0; j < list.length; j++) if (list[j].clips.length && Math.abs(j - i) < bd) { best = list[j]; bd = Math.abs(j - i); }
+    return best ? { ...sc, clips: best.clips } : sc;
+  });
 
 /* ---------- NARRATION ---------- */
 async function speak(key: string, text: string, voice: string) {
@@ -340,6 +471,8 @@ function drawBg(ctx: CanvasRenderingContext2D, w: number, h: number, sc: Scene, 
     ctx.fillStyle = rg; ctx.fillRect(0, 0, w, h);
   }
 }
+const mediaReady = (m: Media | undefined) => !!m && (m instanceof HTMLVideoElement ? m.readyState >= 2 && m.videoWidth > 0 : m.complete && m.naturalWidth > 0);
+const mediaSettled = (m: Media | undefined) => !m || (m instanceof HTMLVideoElement ? m.readyState >= 2 || !!m.error : m.complete);
 type Move = [number, number, number, number, number, number];
 const MOVES: Move[] = [
   [1.04, 1.22, 0, 0, 0, 0],
@@ -374,12 +507,13 @@ function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, sc: Scen
   if (!sh) return;
   const shots = shotsOf(sc);
   const mvOf = (k: number) => (sc.onCam ? null : moveFor(si, k, si === 0 && k === 0, si === count - 1 && k === sh.n - 1));
-  const m = getMedia(shots[sh.k].url);
+  let m = getMedia(shots[sh.k].url);
+  if (!mediaReady(m)) m = shots.map((x) => getMedia(x.url)).find(mediaReady);
   if (m) drawMedia(ctx, w, h, m, Math.min(1, sh.sl / sh.len), mvOf(sh.k));
   const xf = Math.min(0.5, sh.len * 0.3);
   if (sh.k < sh.n - 1 && sh.sl > sh.len - xf) {
     const nm = getMedia(shots[sh.k + 1].url);
-    if (nm) { ctx.globalAlpha = (sh.sl - (sh.len - xf)) / xf; drawMedia(ctx, w, h, nm, 0, mvOf(sh.k + 1)); ctx.globalAlpha = 1; }
+    if (mediaReady(nm) && nm) { ctx.globalAlpha = (sh.sl - (sh.len - xf)) / xf; drawMedia(ctx, w, h, nm, 0, mvOf(sh.k + 1)); ctx.globalAlpha = 1; }
   }
   if (m && !sc.onCam) { ctx.fillStyle = "rgba(0,0,0,0.3)"; ctx.fillRect(0, 0, w, h); }
 }
@@ -468,9 +602,11 @@ export default function App() {
   const [stage, setStage] = useState(0);
   const [autoRender, setAutoRender] = useState(false);
   const [moving, setMoving] = useState(true);
+  const [source, setSource] = useState<Source>("mix");
+  const aiSt = useRef<AiState>({ fails: 0 });
   const [msg, setMsg] = useState("");
-  const [keys, setKeys] = useState<{ pixabay: string; openai: string }>(() => {
-    try { const s = JSON.parse(localStorage.getItem("vortex-keys") || "{}"); return { pixabay: s.pixabay || s.pexels || "", openai: s.openai || "" }; } catch { return { pixabay: "", openai: "" }; }
+  const [keys, setKeys] = useState<{ pixabay: string; pexels: string; openai: string }>(() => {
+    try { const s = JSON.parse(localStorage.getItem("vortex-keys") || "{}"); return { pixabay: s.pixabay || "", pexels: s.pexels || "", openai: s.openai || "" }; } catch { return { pixabay: "", pexels: "", openai: "" }; }
   });
   const [oaVoice, setOaVoice] = useState("alloy");
   const [musicUrl, setMusicUrl] = useState("");
@@ -734,17 +870,18 @@ DELIVERY: voiceover
   const attach = (fl: FileList | null) => {
     const a = Array.from(fl ?? []);
     if (!a.length) return;
-    const vids = a.filter((f) => f.type.startsWith("video"));
-    const use = vids.length ? [vids[0]] : a;
+    const use = a.filter((f) => f.type.startsWith("video") || f.type.startsWith("image"));
+    if (!use.length) return;
     patch({ clips: use.map((f) => ({ url: URL.createObjectURL(f), kind: f.type.startsWith("video") ? ("video" as const) : ("image" as const) })) });
   };
   const findPhoto = async () => {
     if (!sel) return;
     setBusy(true);
     try {
-      const n = shotCount(sel.duration, moving);
-      setMsg(keys.pixabay && moving ? "Downloading video clips…" : "Finding multiple unique visuals for scene…");
-      const clips = await stockFootage(keys.pixabay, photoGroups(sel, topic.trim(), n), fmt, n, res, moving);
+      aiSt.current = { fails: 0 };
+      const n = shotsFor(source, sel.duration, moving);
+      setMsg(source !== "stock" ? "Generating photoreal visuals for this scene (can take a minute)…" : "Finding multiple unique visuals for scene…");
+      const clips = await gatherClips({ keys, source, topic: topic.trim(), f: fmt, res, moving, st: aiSt.current }, sel, n);
       patch({ clips });
       const vids = clips.filter((c) => c.kind === "video").length;
       setMsg(`${vids} video clip${vids === 1 ? "" : "s"} and ${clips.length - vids} photo${clips.length - vids === 1 ? "" : "s"} added.`);
@@ -851,19 +988,25 @@ DELIVERY: voiceover
       }
       setStage(3);
       const withPics: Scene[] = [];
+      aiSt.current = { fails: 0 };
       let failure = "";
       for (let i = 0; i < next.length; i++) {
         const s = next[i];
         if (s.onCam && s.clips.length) { withPics.push(s); continue; }
-        setMsg(`Finding multiple unique visuals for scene ${i + 1} of ${next.length}…`);
-        const n = shotCount(s.duration, moving);
+        setMsg(source !== "stock" ? `Generating photoreal visuals for scene ${i + 1} of ${next.length} (can take a minute each)…` : `Finding multiple unique visuals for scene ${i + 1} of ${next.length}…`);
+        const n = shotsFor(source, s.duration, moving);
         try {
-          const clips = await stockFootage(keys.pixabay, photoGroups(s, topic.trim(), n), fmt, n, res, moving);
+          const clips = await gatherClips({ keys, source, topic: topic.trim(), f: fmt, res, moving, st: aiSt.current }, s, n);
           withPics.push({ ...s, clips });
         } catch (e) { failure = e instanceof Error ? e.message : ""; withPics.push(s); }
       }
       if (failure) note = ` Some visuals failed: ${failure}`;
-      next = withPics;
+      const filled = borrowVisuals(withPics);
+      const reused = withPics.filter((x) => !x.clips.length).length;
+      const bare = filled.filter((x) => !x.clips.length).length;
+      if (reused && !bare) note += ` ${reused} scene(s) found no matching footage and reuse visuals from a neighbouring scene.`;
+      if (bare) note += ` ${bare} scene(s) have no visuals at all. Add a Pexels key under API keys and try again.`;
+      next = filled;
       setScenes(next);
       fillMeta(r.meta, next);
       setStage(4); setMsg(`Rendering video in real time (${clock(len)}). Keep this tab open and in front.${note}`);
@@ -932,9 +1075,12 @@ DELIVERY: voiceover
       : undefined;
     if (attempt === 0 && !mime) { setMsg("This browser can't record video. Use desktop Chrome or Edge."); return; }
     pause(); setFile(null); setExporting(true); setStage(4);
+    Object.values(mediaRef.current).forEach((el) => {
+      if (el instanceof HTMLVideoElement && el.readyState < 2) { el.preload = "auto"; el.load(); el.play().then(() => el.pause()).catch(() => {}); }
+    });
     const t0 = performance.now();
-    while (performance.now() - t0 < 25000) {
-      const ok = live.current.scenes.every((s) => s.clips.every((cl) => { const m = mediaRef.current[cl.url]; return !!m && (m instanceof HTMLVideoElement ? m.readyState >= 2 : m.complete); }));
+    while (performance.now() - t0 < 40000) {
+      const ok = live.current.scenes.every((s) => s.clips.every((cl) => mediaSettled(mediaRef.current[cl.url])));
       if (ok) break;
       await new Promise((res) => setTimeout(res, 100));
     }
@@ -1015,7 +1161,7 @@ DELIVERY: voiceover
     { ok: thumbMb !== null && thumbMb < 2, t: "Thumbnail 1280×720, under 2 MB" },
   ];
   const tabs: [Tab, string][] = [["create", "Create"], ["scenes", "Scenes"], ["audio", "Audio"], ["camera", "Camera"], ["publish", "Publish"]];
-  const setKey = (k: "pixabay" | "openai", v: string) => setKeys({ ...keys, [k]: v.trim() });
+  const setKey = (k: "pixabay" | "pexels" | "openai", v: string) => setKeys({ ...keys, [k]: v.trim() });
   const switchFmt = (f: Fmt) => { setFmt(f); setMinutes(f === "short" ? 1 : 3); setMinSec(f === "short" ? 0 : 120); };
 
   return (
@@ -1072,6 +1218,14 @@ DELIVERY: voiceover
               <Field l="Step 2. Paste the script here">
                 <textarea className={inp} rows={8} value={scriptText} onChange={(e) => setScriptText(e.target.value)} placeholder={"Paste AI script reply here..."} />
               </Field>
+              <Field l="Visual source">
+                <select className={inp} value={source} onChange={(e) => setSource(e.target.value as Source)}>
+                  <option value="mix">Both: AI images + stock video (free, recommended)</option>
+                  <option value="ai">AI photoreal images only (free, no key)</option>
+                  <option value="stock">Stock footage (needs a Pexels or Pixabay key)</option>
+                </select>
+              </Field>
+              {source !== "stock" && <p className="text-xs text-slate-500">{source === "mix" ? "Each scene gets AI photos plus real video clips (video needs a free Pixabay key under API keys; without one you get AI photos only). " : "Each scene gets AI photos that match your VISUAL lines. "}Allow about 1 to 2 minutes per scene before rendering starts.</p>}
               <label className="flex items-start gap-2 rounded-md border border-slate-800 p-2 text-xs text-slate-400">
                 <input type="checkbox" className="mt-0.5" checked={moving} onChange={(e) => setMoving(e.target.checked)} />
                 <span><b className="text-slate-200">Use moving video footage.</b> Finds multiple video clips per scene. Rich visual assets automatically fill in to pack every scene with high visual variety.</span>
@@ -1089,9 +1243,10 @@ DELIVERY: voiceover
               <details className="rounded-md border border-slate-800 p-3 text-sm">
                 <summary className="cursor-pointer text-slate-300">API keys (optional)</summary>
                 <div className="mt-3 space-y-3">
-                  <Field l="Pixabay key (optional for stock video)"><input type="password" className={inp} value={keys.pixabay} onChange={(e) => setKey("pixabay", e.target.value)} /></Field>
+                  <Field l="Pexels key (recommended: best photoreal video and photos)"><input type="password" className={inp} value={keys.pexels} onChange={(e) => setKey("pexels", e.target.value)} /></Field>
+                  <Field l="Pixabay key (optional backup)"><input type="password" className={inp} value={keys.pixabay} onChange={(e) => setKey("pixabay", e.target.value)} /></Field>
                   <Field l="OpenAI key (optional for AI voiceover)"><input type="password" className={inp} value={keys.openai} onChange={(e) => setKey("openai", e.target.value)} /></Field>
-                  <p className="text-xs text-slate-500">Without a Pixabay key, multiple context-matching visual assets are automatically generated per scene.</p>
+                  <p className="text-xs text-slate-500">Without a Pexels or Pixabay key, scenes use random placeholder photos that will not match your script. Pexels is not issuing new keys right now, but an existing key still works. You can also upload your own clips per scene in the Scenes tab.</p>
                 </div>
               </details>
             </>)}
@@ -1119,7 +1274,7 @@ DELIVERY: voiceover
                 <Field l="Visual search keywords"><input className={inp} value={sel.visual} onChange={(e) => patch({ visual: e.target.value })} /></Field>
                 <button className={btn()} disabled={busy} onClick={findPhoto}>Find more visuals for this scene</button>
                 <p className="text-xs text-slate-500">{sel.clips.length} asset(s) packed in this scene.</p>
-                <Field l="Upload custom image/video"><input type="file" multiple accept="image/*,video/*" className="text-xs" onChange={(e) => attach(e.target.files)} /></Field>
+                <Field l="Upload your own images and videos (select several)"><input type="file" multiple accept="image/*,video/*" className="text-xs" onChange={(e) => attach(e.target.files)} /></Field>
               </div>)}
             </>)}
 
