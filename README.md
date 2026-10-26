@@ -6,7 +6,8 @@ A browser-based video maker. Paste a script, and it splits it into scenes, finds
 
 - Turns a pasted script (Markdown or JSON) into editable scenes with a timeline and live preview.
 - Finds visuals per scene: free AI photos (Pollinations), stock video and photos (Pexels and Pixabay, when the server has their keys), or your own uploads. Every scene can mix them. In the Scenes tab you can add more visuals, remove one or reorder them; uploads are never replaced by "Find and add more visuals" or by Generate video.
-- Voiceover: AI voice through OpenAI (server key), your own recording, or an uploaded file. Background music upload.
+- Voiceover: built-in AI voice (free Cloudflare Workers AI voice, or OpenAI if you prefer), your own recording, or an uploaded file. Background music upload.
+- Share: sends the finished video through the phone's share menu (nothing is uploaded by the app).
 - Burned-in captions, intro text, slow zoom and pan, crossfades, and a camera and microphone recorder.
 - Publish tab: title, description, tags, thumbnail (with download), and a checklist.
 - Export: records the preview in your browser to a video file.
@@ -20,11 +21,13 @@ API keys never go in the browser. Three Netlify Functions hold them on the serve
 
 | Function | Purpose | Needs |
 | --- | --- | --- |
-| `/api/tts` | AI voiceover | `OPENAI_TTS_API_KEY` |
+| `/api/tts` | AI voiceover | `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` (free allowance), or `OPENAI_TTS_API_KEY` |
 | `/api/stock` | Pexels and Pixabay search | `PEXELS_API_KEY`, `PIXABAY_API_KEY` |
 | `/api/status` | Tells the app which keys exist (true or false only) | none |
 
-The voice key is named `OPENAI_TTS_API_KEY` on purpose. Netlify's AI Gateway automatically fills a variable called `OPENAI_API_KEY` with its own key, which OpenAI rejects when the app calls OpenAI directly, so the app ignores that name.
+If both voice services are set, Cloudflare is used (set `TTS_PROVIDER=openai` to prefer OpenAI). The Cloudflare voice is one English voice; OpenAI offers six.
+
+The OpenAI key is named `OPENAI_TTS_API_KEY` on purpose. Netlify's AI Gateway automatically fills a variable called `OPENAI_API_KEY` with its own key, which OpenAI rejects when the app calls OpenAI directly, so the app ignores that name.
 
 Every call must carry the `ACCESS_CODE` you choose. If `ACCESS_CODE` is not set on the server, the functions refuse everything, so a public site cannot spend your credit by accident.
 
@@ -52,7 +55,7 @@ Other commands: `npm run build` (type-check and build) and `npm run lint`.
 
 - Export records in real time, so the tab must stay open and in front for the full length of the video. The file is WebM on most browsers; MP4 only where the browser records it.
 - Pollinations is used without a key. Its current free limits and commercial-use terms have not been verified.
-- Live calls to OpenAI, Pexels and Pixabay have not been tested end to end. The functions have local mock tests only.
+- Live calls to Cloudflare voice, OpenAI, Pexels and Pixabay have not been tested end to end. The Cloudflare voice reply format was handled from its documentation (raw MP3 or base64 JSON) and not confirmed with a real call; whether the free daily allowance applies to API calls is also unconfirmed. The functions have local mock tests only.
 - Pexels and Pixabay ask for a visible source. While their visuals are in the video, the app keeps a credit line in the description automatically (it names the sites, not individual photographers).
 
 ## Roadmap

@@ -15,7 +15,7 @@ type Live = { scenes: Scene[]; starts: number[]; total: number; caps: boolean; W
 
 const PALETTES = [["#1b1442", "#6d3df0"], ["#0b1f33", "#13a8c9"], ["#0f2a22", "#2fb67c"], ["#3a1212", "#e8643a"], ["#1d1d3a", "#d6458f"]];
 const FONT = "Inter, system-ui, sans-serif";
-const NO_PROVIDERS = { pixabay: false, pexels: false, openai: false };
+const NO_PROVIDERS = { pixabay: false, pexels: false, voice: false, voiceProvider: "" };
 const SHOT_SECONDS = 3; // Pictures rotate faster for more visuals per scene
 const uid = () => Math.random().toString(36).slice(2, 9);
 const words = (s: string) => s.trim().split(/\s+/).filter(Boolean);
@@ -667,7 +667,7 @@ export default function App() {
   const [server, setServer] = useState(NO_PROVIDERS);
   const [serverMsg, setServerMsg] = useState("");
   // Each value is the access code when that provider has a key on the server, otherwise "".
-  const keys = { pixabay: server.pixabay ? code : "", pexels: server.pexels ? code : "", openai: server.openai ? code : "" };
+  const keys = { pixabay: server.pixabay ? code : "", pexels: server.pexels ? code : "", voice: server.voice ? code : "" };
   const [oaVoice, setOaVoice] = useState("alloy");
   const [musicUrl, setMusicUrl] = useState("");
   const [musicVol, setMusicVol] = useState(0.15);
@@ -792,9 +792,9 @@ DELIVERY: voiceover
     const id = window.setTimeout(async () => {
       try {
         const r = await fetch("/api/status", { headers: { "x-access-code": code }, signal: ctl.signal });
-        const j = (await r.json()) as { error?: string; openai?: boolean; pexels?: boolean; pixabay?: boolean };
+        const j = (await r.json()) as { error?: string; voice?: boolean; voiceProvider?: string; pexels?: boolean; pixabay?: boolean };
         if (!r.ok) { setServer(NO_PROVIDERS); setServerMsg(j.error || `The server returned ${r.status}.`); return; }
-        setServer({ openai: !!j.openai, pexels: !!j.pexels, pixabay: !!j.pixabay });
+        setServer({ voice: !!j.voice, voiceProvider: j.voiceProvider ?? "", pexels: !!j.pexels, pixabay: !!j.pixabay });
         setServerMsg("Connected.");
       } catch {
         if (!ctl.signal.aborted) { setServer(NO_PROVIDERS); setServerMsg("Could not reach the server functions. They only run on Netlify."); }
@@ -1086,7 +1086,7 @@ DELIVERY: voiceover
         setMsg(`Recording narration ${i + 1} of ${list.length} (sentence ${j + 1} of ${sents.length})…`);
         const pcs: Float32Array[] = [];
         for (const piece of splitText(sents[j])) {
-          const b = await speak(keys.openai, piece, oaVoice);
+          const b = await speak(keys.voice, piece, oaVoice);
           pcs.push((await ac.decodeAudioData(await b.arrayBuffer())).getChannelData(0).slice());
         }
         const n = pcs.reduce((a, c) => a + c.length, 0), d = new Float32Array(n);
@@ -1121,7 +1121,7 @@ DELIVERY: voiceover
       }
       let next = r.list, note = "";
       setStage(2);
-      if (keys.openai) next = await narrate(next);
+      if (keys.voice) next = await narrate(next);
       else if (voiceDur) next = fitTo(next, voiceDur);
       const len = next.reduce((a, s) => a + s.duration, 0);
       if (minSec && len < minSec) {
@@ -1167,7 +1167,7 @@ DELIVERY: voiceover
     speechSynthesis.speak(u);
   };
   const aiVoiceOnly = async () => {
-    if (!keys.openai) { setMsg("AI voiceover needs the access code in the Create tab, and an OpenAI key set on the server."); return; }
+    if (!keys.voice) { setMsg("AI voiceover needs the access code in the Create tab, and a voice service set on the server (the free Cloudflare one or OpenAI)."); return; }
     setBusy(true);
     try { setScenes(await narrate(scenes)); setMsg("Voiceover ready."); } catch (e) { setMsg(e instanceof Error ? e.message : "Voiceover failed."); }
     setBusy(false);
@@ -1391,7 +1391,7 @@ DELIVERY: voiceover
                 <summary className="cursor-pointer text-slate-300">Server access (optional)</summary>
                 <div className="mt-3 space-y-3">
                   <Field l="Access code"><input type="password" className={inp} value={code} onChange={(e) => setCode(e.target.value.trim())} /></Field>
-                  {serverMsg && <p className="text-xs text-slate-300">{serverMsg}{serverMsg === "Connected." && ` AI voiceover: ${server.openai ? "on" : "off"}. Pexels: ${server.pexels ? "on" : "off"}. Pixabay: ${server.pixabay ? "on" : "off"}.`}</p>}
+                  {serverMsg && <p className="text-xs text-slate-300">{serverMsg}{serverMsg === "Connected." && ` AI voiceover: ${server.voice ? `on (${server.voiceProvider === "cloudflare" ? "Cloudflare, free allowance" : "OpenAI"})` : "off"}. Pexels: ${server.pexels ? "on" : "off"}. Pixabay: ${server.pixabay ? "on" : "off"}.`}</p>}
                   <p className="text-xs text-slate-500">Provider keys now live on the server (Netlify) and never reach this browser. Enter the access code you set there to unlock AI voiceover and Pexels or Pixabay stock footage. Without it, the app still uses free AI images and your own uploads. When Pexels or Pixabay visuals are used, a credit line is added to the description automatically. You can also upload your own clips per scene in the Scenes tab.</p>
                 </div>
               </details>
@@ -1441,7 +1441,8 @@ DELIVERY: voiceover
 
             {tab === "audio" && (<>
               <h3 className="text-sm font-semibold">Voiceover</h3>
-              <Field l="AI voice"><select className={inp} value={oaVoice} onChange={(e) => setOaVoice(e.target.value)}>{["alloy", "nova", "onyx", "echo", "shimmer", "fable"].map((v) => <option key={v}>{v}</option>)}</select></Field>
+              {server.voiceProvider === "openai" && <Field l="AI voice"><select className={inp} value={oaVoice} onChange={(e) => setOaVoice(e.target.value)}>{["alloy", "nova", "onyx", "echo", "shimmer", "fable"].map((v) => <option key={v}>{v}</option>)}</select></Field>}
+              <p className="text-xs text-slate-500">{server.voice ? (server.voiceProvider === "cloudflare" ? "Built-in English voice (Cloudflare, free daily allowance). It makes one voice, so there is no voice list." : "Voice from OpenAI. Pick one above.") : "AI voiceover is off. Enter the access code in the Create tab, and set up a voice service on the server (see the README)."}</p>
               <button className={btn(true)} disabled={busy} onClick={aiVoiceOnly}>Record AI voiceover</button>
               <Field l="Browser voice (preview)"><select className={inp} value={voiceName} onChange={(e) => setVoiceName(e.target.value)}>{voices.map((v) => <option key={v.name}>{v.name}</option>)}</select></Field>
               <div className="flex gap-2"><button className={btn()} onClick={previewVoice}>Preview</button><button className={btn()} onClick={() => speechSynthesis.cancel()}>Stop</button></div>
