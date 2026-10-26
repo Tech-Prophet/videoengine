@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 type Fmt = "long" | "short";
 type Tab = "create" | "scenes" | "audio" | "camera" | "publish";
 type Media = HTMLImageElement | HTMLVideoElement;
-type Clip = { url: string; kind: "image" | "video" };
+type Clip = { url: string; kind: "image" | "video"; src?: "upload" | "ai" | "pexels" | "pixabay" }; // src = where the visual came from (no src = recorded on camera)
 // onCam = a person speaks on camera in this scene (their own voice, real lip movement). Otherwise it is narration only.
 type Draft = { title: string; text: string; onScreen: string; visual: string; onCam?: boolean };
 type Mark = { at: number; len: number; text: string }; // one narrated sentence: start and length in seconds, relative to the start of its scene
@@ -179,13 +179,13 @@ async function fetchPhoto(url: string): Promise<string | null> {
 const apiStock = (qs: string, code: string) => fetch(`/api/stock?${qs}`, { headers: { "x-access-code": code } });
 const orient = (f: Fmt) => (f === "long" ? "landscape" : "portrait");
 
-async function stockImages(key: string, groups: { q: string; cap: number }[], f: Fmt, n: number): Promise<string[]> {
+async function stockImages(key: string, groups: { q: string; cap: number }[], f: Fmt, n: number, page = 1): Promise<string[]> {
   const seen = new Set<number>(), urls: string[] = [];
   if (key) {
     for (const g of groups) {
       if (!g.q || urls.length >= n) continue;
       try {
-        const r = await apiStock(`provider=pixabay&kind=photos&q=${encodeURIComponent(g.q)}&orientation=${orient(f)}&per_page=${Math.min(50, n + 6)}`, key);
+        const r = await apiStock(`provider=pixabay&kind=photos&q=${encodeURIComponent(g.q)}&orientation=${orient(f)}&per_page=${Math.min(50, n + 6)}&page=${page}`, key);
         if (!r.ok) throw new Error("Pixabay request failed. Check the access code and the server keys.");
         let taken = 0;
         for (const p of (await r.json()).hits ?? []) {
@@ -199,13 +199,13 @@ async function stockImages(key: string, groups: { q: string; cap: number }[], f:
   return (await Promise.all(urls.map(fetchPhoto))).filter((u): u is string => !!u);
 }
 
-async function stockVideos(key: string, groups: { q: string; cap: number }[], n: number, quality: "medium" | "small"): Promise<string[]> {
+async function stockVideos(key: string, groups: { q: string; cap: number }[], n: number, quality: "medium" | "small", page = 1): Promise<string[]> {
   const seen = new Set<number>(), urls: string[] = [];
   if (!key) return [];
   for (const g of groups) {
     if (!g.q || urls.length >= n) continue;
     try {
-      const r = await apiStock(`provider=pixabay&kind=videos&q=${encodeURIComponent(g.q)}&per_page=${Math.min(50, n + 8)}`, key);
+      const r = await apiStock(`provider=pixabay&kind=videos&q=${encodeURIComponent(g.q)}&per_page=${Math.min(50, n + 8)}&page=${page}`, key);
       if (!r.ok) continue;
       let taken = 0;
       for (const p of (await r.json()).hits ?? []) {
@@ -228,7 +228,7 @@ const blobUrl = async (u: string): Promise<string | null> => {
   try { const r = await fetch(u); if (r.ok) return URL.createObjectURL(await r.blob()); } catch { /* skip */ }
   return null;
 };
-async function pexelsVideos(key: string, groups: { q: string; cap: number }[], f: Fmt, n: number, res: number): Promise<string[]> {
+async function pexelsVideos(key: string, groups: { q: string; cap: number }[], f: Fmt, n: number, res: number, page = 1): Promise<string[]> {
   if (!key || n <= 0) return [];
   const seen = new Set<number>(), links: string[] = [];
   const want = res >= 1440 ? 1920 : 1280;
@@ -236,7 +236,7 @@ async function pexelsVideos(key: string, groups: { q: string; cap: number }[], f
   for (const g of groups) {
     if (!g.q || links.length >= n) continue;
     try {
-      const r = await apiStock(`provider=pexels&kind=videos&q=${encodeURIComponent(g.q)}&orientation=${orient(f)}&per_page=${Math.min(40, n + 8)}`, key);
+      const r = await apiStock(`provider=pexels&kind=videos&q=${encodeURIComponent(g.q)}&orientation=${orient(f)}&per_page=${Math.min(40, n + 8)}&page=${page}`, key);
       if (!r.ok) continue;
       let taken = 0;
       for (const v of (await r.json()).videos ?? []) {
@@ -251,13 +251,13 @@ async function pexelsVideos(key: string, groups: { q: string; cap: number }[], f
   }
   return (await Promise.all(links.map(blobUrl))).filter((u): u is string => !!u);
 }
-async function pexelsPhotos(key: string, groups: { q: string; cap: number }[], f: Fmt, n: number): Promise<string[]> {
+async function pexelsPhotos(key: string, groups: { q: string; cap: number }[], f: Fmt, n: number, page = 1): Promise<string[]> {
   if (!key || n <= 0) return [];
   const seen = new Set<number>(), urls: string[] = [];
   for (const g of groups) {
     if (!g.q || urls.length >= n) continue;
     try {
-      const r = await apiStock(`provider=pexels&kind=photos&q=${encodeURIComponent(g.q)}&orientation=${orient(f)}&per_page=${Math.min(40, n + 6)}`, key);
+      const r = await apiStock(`provider=pexels&kind=photos&q=${encodeURIComponent(g.q)}&orientation=${orient(f)}&per_page=${Math.min(40, n + 6)}&page=${page}`, key);
       if (!r.ok) continue;
       let taken = 0;
       for (const p of (await r.json()).photos ?? []) {
@@ -272,64 +272,32 @@ async function pexelsPhotos(key: string, groups: { q: string; cap: number }[], f
   return (await Promise.all(urls.map(fetchPhoto))).filter((u): u is string => !!u);
 }
 
-// Order: Pexels video, Pixabay video, Pexels photos, Pixabay photos, then placeholders so a scene is never empty.
-async function stockFootage(k: { pixabay: string; pexels: string }, groups: { q: string; cap: number }[], f: Fmt, n: number, res: number, video: boolean): Promise<Clip[]> {
+// Order: Pexels video, Pixabay video, Pexels photos, Pixabay photos. Every clip is tagged with its source.
+async function stockFootage(k: { pixabay: string; pexels: string }, groups: { q: string; cap: number }[], f: Fmt, n: number, res: number, video: boolean, page = 1): Promise<Clip[]> {
   const out: Clip[] = [];
-  const add = (urls: string[], kind: Clip["kind"]) => urls.forEach((url) => { if (out.length < n) out.push({ url, kind }); });
-  if (video && k.pexels) add(await pexelsVideos(k.pexels, groups, f, n, res), "video");
-  if (video && k.pixabay && out.length < n) add(await stockVideos(k.pixabay, groups, n - out.length, res >= 1080 ? "medium" : "small"), "video");
-  if (out.length < n && k.pexels) add(await pexelsPhotos(k.pexels, groups, f, n - out.length), "image");
+  const add = (urls: string[], kind: Clip["kind"], src: NonNullable<Clip["src"]>) => urls.forEach((url) => { if (out.length < n) out.push({ url, kind, src }); });
+  if (video && k.pexels) add(await pexelsVideos(k.pexels, groups, f, n, res, page), "video", "pexels");
+  if (video && k.pixabay && out.length < n) add(await stockVideos(k.pixabay, groups, n - out.length, res >= 1080 ? "medium" : "small", page), "video", "pixabay");
+  if (out.length < n && k.pexels) add(await pexelsPhotos(k.pexels, groups, f, n - out.length, page), "image", "pexels");
   if (out.length < n) {
-    try { add(await stockImages(k.pixabay, groups, f, n - out.length), "image"); }
+    try { add(await stockImages(k.pixabay, groups, f, n - out.length, page), "image", "pixabay"); }
     catch (e) { if (!out.length) throw e; }
   }
   return out;
 }
-type CommonsInfo = { url?: string; thumburl?: string; size?: number; width?: number; height?: number; mime?: string; extmetadata?: Record<string, { value?: string }> };
-type CommonsPage = { title?: string; imageinfo?: CommonsInfo[] };
-const plain = (h: string) => h.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim();
-// Wikimedia Commons: free, no key. Only licences that allow commercial use (CC0, public domain, CC BY, CC BY-SA); the author credit is collected for the description.
-async function commonsMedia(groups: { q: string; cap: number }[], kind: "video" | "image", n: number, credits: string[]): Promise<string[]> {
-  if (n <= 0) return [];
-  const seen = new Set<string>(), urls: string[] = [], notes: string[] = [];
-  for (const g of groups) {
-    if (!g.q || urls.length >= n) continue;
-    try {
-      const q = `${g.q} filetype:${kind === "video" ? "video" : "bitmap"}`;
-      const r = await fetch(`https://commons.wikimedia.org/w/api.php?action=query&format=json&origin=*&generator=search&gsrnamespace=6&gsrlimit=${Math.min(30, n * 3 + 6)}&gsrsearch=${encodeURIComponent(q)}&prop=imageinfo&iiprop=url|size|mime|extmetadata&iiurlwidth=1920`);
-      if (!r.ok) continue;
-      const pages = Object.values(((await r.json()).query?.pages ?? {}) as Record<string, CommonsPage>);
-      let taken = 0;
-      for (const p of pages) {
-        if (urls.length >= n || taken >= g.cap) break;
-        const ii = p.imageinfo?.[0];
-        if (!ii || !p.title || seen.has(p.title)) continue;
-        const lic = ii.extmetadata?.LicenseShortName?.value ?? "";
-        if (!/^(cc0|pd|public domain|cc by(-sa)? )/i.test(lic) || /-nc|-nd/i.test(lic)) continue;
-        const mime = ii.mime ?? "";
-        let u: string | undefined;
-        if (kind === "video") {
-          if (!(mime.startsWith("video/") || mime === "application/ogg") || (ii.size ?? 1e9) > 25e6 || (ii.width ?? 0) < 640) continue;
-          u = ii.url;
-        } else {
-          if (!/^image\/(jpeg|png|webp)$/.test(mime) || (ii.width ?? 0) < 1000) continue;
-          u = ii.thumburl || ii.url;
-        }
-        if (!u) continue;
-        seen.add(p.title); taken++; urls.push(u);
-        const artist = plain(ii.extmetadata?.Artist?.value ?? "").slice(0, 60) || "unknown author";
-        notes.push(`"${p.title.replace(/^File:/, "").replace(/\.[a-z0-9]+$/i, "")}" by ${artist} (${lic}), via Wikimedia Commons`);
-      }
-    } catch { /* try next search */ }
-  }
-  const got = await Promise.all(urls.map(kind === "video" ? blobUrl : fetchPhoto));
-  got.forEach((x, i) => { if (x) credits.push(notes[i]); });
-  return got.filter((x): x is string => !!x);
-}
-const withCredits = (d: string, list: string[]) => {
-  const head = d.split("\n\nCredits (Wikimedia Commons):")[0];
-  const uniq = [...new Set(list)].slice(0, 25);
-  return uniq.length ? `${head}\n\nCredits (Wikimedia Commons):\n${uniq.join("\n")}` : head;
+// Visuals the user supplied (uploads, or recorded on camera) are never replaced by generated ones.
+const mine = (c: Clip) => c.src === "upload" || !c.src;
+const ORIGIN: Record<string, string> = { upload: "Your upload", ai: "AI image", pexels: "Pexels", pixabay: "Pixabay" };
+const originOf = (c: Clip) => (c.src ? `${ORIGIN[c.src]}${c.src === "pexels" || c.src === "pixabay" ? (c.kind === "video" ? " video" : " photo") : ""}` : "Camera recording");
+// Pexels and Pixabay ask for a visible source line. It is kept in the description automatically, only while their visuals are in the video.
+const CREDIT_HEAD = "\n\nStock footage credits:";
+const withCredits = (d: string, list: Scene[]) => {
+  const head = d.split(CREDIT_HEAD)[0];
+  const all = list.flatMap((s) => s.clips);
+  const lines: string[] = [];
+  if (all.some((c) => c.src === "pexels")) lines.push("Videos and photos provided by Pexels (https://www.pexels.com)");
+  if (all.some((c) => c.src === "pixabay")) lines.push("Videos and photos from Pixabay (https://pixabay.com)");
+  return lines.length ? `${head}${CREDIT_HEAD}\n${lines.join("\n")}` : head;
 };
 type AiState = { fails: number };
 const ANGLES = ["wide establishing shot", "close-up detail", "medium shot with natural action", "low angle dramatic view", "aerial view", "soft focus foreground depth"];
@@ -365,7 +333,7 @@ async function aiImages(queries: string[], topic: string, f: Fmt, n: number, st:
 }
 type Source = "ai" | "stock" | "mix";
 const shotsFor = (src: Source, dur: number, moving: boolean) => (src === "ai" ? aiShots(dur) : src === "mix" ? Math.max(4, Math.min(8, Math.ceil(dur / 7))) : shotCount(dur, moving));
-type Gather = { keys: { pixabay: string; pexels: string }; source: Source; topic: string; f: Fmt; res: number; moving: boolean; st: AiState; credits: string[] };
+type Gather = { keys: { pixabay: string; pexels: string }; source: Source; topic: string; f: Fmt; res: number; moving: boolean; st: AiState; page?: number };
 // The sentence being narrated at a given point (0 to 1) of a scene, used to make AI pictures match the story.
 const narrAt = (text: string, frac: number) => {
   const ss = sentencesOf(text);
@@ -376,46 +344,41 @@ const narrAt = (text: string, frac: number) => {
 async function gatherClips(o: Gather, sc: Scene, n: number): Promise<Clip[]> {
   const own = sc.visual.split("|").map((x) => x.trim()).filter(Boolean);
   const qs = own.length ? own : [sc.title];
+  const page = o.page ?? 1;
+  const aiClips = async (count: number, offset: number): Promise<Clip[]> => {
+    const narr = Array.from({ length: count }, (_, i) => narrAt(sc.text, (offset + i) / Math.max(1, n)));
+    return (await aiImages(qs, o.topic, o.f, count, o.st, narr)).map((url) => ({ url, kind: "image" as const, src: "ai" as const }));
+  };
   if (o.source === "mix") {
     // Half real stock video, half AI photos, interleaved so every scene has both moving video and images.
-    const vids: string[] = [];
+    const vids: Clip[] = [];
     const want = o.moving ? Math.floor(n / 2) : 0;
     if (want > 0) {
       const groups = photoGroups(sc, o.topic, want);
-      if (o.keys.pexels) vids.push(...(await pexelsVideos(o.keys.pexels, groups, o.f, want, o.res)));
-      if (vids.length < want && o.keys.pixabay) vids.push(...(await stockVideos(o.keys.pixabay, groups, want - vids.length, o.res >= 1080 ? "medium" : "small")));
-      if (vids.length < want) vids.push(...(await commonsMedia(groups, "video", want - vids.length, o.credits)));
+      if (o.keys.pexels) (await pexelsVideos(o.keys.pexels, groups, o.f, want, o.res, page)).forEach((url) => vids.push({ url, kind: "video", src: "pexels" }));
+      if (vids.length < want && o.keys.pixabay) (await stockVideos(o.keys.pixabay, groups, want - vids.length, o.res >= 1080 ? "medium" : "small", page)).forEach((url) => vids.push({ url, kind: "video", src: "pixabay" }));
     }
     const nImg = n - vids.length;
     const slot = (i: number) => (i < vids.length ? 2 * i + 1 : vids.length + i);
     const narr = Array.from({ length: nImg }, (_, i) => narrAt(sc.text, slot(i) / Math.max(1, n)));
-    const imgs = await aiImages(qs, o.topic, o.f, nImg, o.st, narr);
+    const imgs = (await aiImages(qs, o.topic, o.f, nImg, o.st, narr)).map((url) => ({ url, kind: "image" as const, src: "ai" as const }));
     const mixed: Clip[] = [];
     for (let i = 0; i < Math.max(vids.length, imgs.length); i++) {
-      if (i < vids.length) mixed.push({ url: vids[i], kind: "video" });
-      if (i < imgs.length) mixed.push({ url: imgs[i], kind: "image" });
+      if (i < vids.length) mixed.push(vids[i]);
+      if (i < imgs.length) mixed.push(imgs[i]);
     }
     return mixed;
   }
   const out: Clip[] = [];
   const hasStockKey = !!(o.keys.pexels || o.keys.pixabay);
-  const ai = async (count: number, offset: number) => {
-    const narr = Array.from({ length: count }, (_, i) => narrAt(sc.text, (offset + i) / Math.max(1, n)));
-    (await aiImages(qs, o.topic, o.f, count, o.st, narr)).forEach((url) => out.push({ url, kind: "image" }));
-  };
-  if (o.source === "ai") await ai(n, 0);
+  if (o.source === "ai") out.push(...(await aiClips(n, 0)));
   if (out.length < n && hasStockKey) {
     const need = n - out.length;
-    try { out.push(...(await stockFootage(o.keys, photoGroups(sc, o.topic, need), o.f, need, o.res, o.moving))); }
+    try { out.push(...(await stockFootage(o.keys, photoGroups(sc, o.topic, need), o.f, need, o.res, o.moving, page))); }
     catch (e) { if (!out.length) throw e; }
   }
-  if (o.source === "stock" && out.length < n) {
-    const groups = photoGroups(sc, o.topic, n - out.length);
-    if (o.moving) (await commonsMedia(groups, "video", n - out.length, o.credits)).forEach((url) => out.push({ url, kind: "video" }));
-    if (out.length < n) (await commonsMedia(groups, "image", n - out.length, o.credits)).forEach((url) => out.push({ url, kind: "image" }));
-  }
   // Stock mode: any gap is filled with AI pictures made from the narration, never random photos.
-  if (o.source === "stock" && out.length < n) await ai(n - out.length, out.length);
+  if (o.source === "stock" && out.length < n) out.push(...(await aiClips(n - out.length, out.length)));
   return out;
 }
 // Keyword searches only: the scene's own VISUAL lines and shorter versions of them. Generic title/topic searches are used only when a scene has no VISUAL line.
@@ -698,7 +661,7 @@ export default function App() {
   const [moving, setMoving] = useState(saved?.moving ?? true);
   const [source, setSource] = useState<Source>(saved?.source ?? "mix");
   const aiSt = useRef<AiState>({ fails: 0 });
-  const creditsRef = useRef<string[]>([]);
+  const findPage = useRef<Record<string, number>>({}); // per scene: which page of stock results "Find and add more" is on
   const [msg, setMsg] = useState("");
   const [code, setCode] = useState<string>(() => { try { return localStorage.getItem("vortex-access") || ""; } catch { return ""; } });
   const [server, setServer] = useState(NO_PROVIDERS);
@@ -839,6 +802,9 @@ DELIVERY: voiceover
     }, 500);
     return () => { ctl.abort(); clearTimeout(id); };
   }, [code]);
+
+  // Keeps the Pexels/Pixabay source line in the description in step with the visuals actually used.
+  useEffect(() => { setVDesc((d) => withCredits(d, scenes)); }, [scenes]);
 
   useEffect(() => {
     const m = mediaRef.current;
@@ -994,23 +960,37 @@ DELIVERY: voiceover
   const fitVoice = () => { setScenes(fitTo(scenes, voiceDur)); setMsg("Scene lengths now match your voiceover."); };
   const attach = (fl: FileList | null) => {
     const a = Array.from(fl ?? []);
-    if (!a.length) return;
+    if (!a.length || !sel) return;
     const use = a.filter((f) => f.type.startsWith("video") || f.type.startsWith("image"));
-    if (!use.length) return;
-    patch({ clips: use.map((f) => ({ url: URL.createObjectURL(f), kind: f.type.startsWith("video") ? ("video" as const) : ("image" as const) })) });
+    if (!use.length) { setMsg("Those files are not pictures or videos."); return; }
+    const added: Clip[] = use.map((f) => ({ url: URL.createObjectURL(f), kind: f.type.startsWith("video") ? ("video" as const) : ("image" as const), src: "upload" as const }));
+    patch({ clips: [...sel.clips, ...added] });
+    setMsg(`${added.length} file${added.length === 1 ? "" : "s"} added to this scene.`);
+  };
+  const dropClip = (k: number) => { if (sel) patch({ clips: sel.clips.filter((_, i) => i !== k) }); };
+  const moveClip = (k: number, d: number) => {
+    if (!sel) return;
+    const j = k + d;
+    if (j < 0 || j >= sel.clips.length) return;
+    const c = [...sel.clips];
+    [c[k], c[j]] = [c[j], c[k]];
+    patch({ clips: c });
   };
   const findPhoto = async () => {
     if (!sel) return;
+    const id = sel.id;
     setBusy(true);
     try {
       aiSt.current = { fails: 0 };
       const n = shotsFor(source, sel.duration, moving);
-      setMsg(source !== "stock" ? "Generating photoreal visuals for this scene (can take a minute)…" : "Finding multiple unique visuals for scene…");
-      const clips = await gatherClips({ keys, source, topic: topic.trim(), f: fmt, res, moving, st: aiSt.current, credits: creditsRef.current }, sel, n);
-      patch({ clips });
-      setVDesc((d) => withCredits(d, creditsRef.current));
+      const page = (findPage.current[id] ?? 1) + 1; // page 1 was used when the video was generated; each press moves on to fresh results
+      findPage.current[id] = page;
+      setMsg(source !== "stock" ? "Generating more visuals for this scene (can take a minute)…" : "Finding more visuals for this scene…");
+      const clips = await gatherClips({ keys, source, topic: topic.trim(), f: fmt, res, moving, st: aiSt.current, page }, sel, n);
+      // Added after what the scene already has, so uploads and earlier finds are kept.
+      setScenes((ss) => ss.map((s) => (s.id === id ? { ...s, clips: [...s.clips, ...clips] } : s)));
       const vids = clips.filter((c) => c.kind === "video").length;
-      setMsg(`${vids} video clip${vids === 1 ? "" : "s"} and ${clips.length - vids} photo${clips.length - vids === 1 ? "" : "s"} added.`);
+      setMsg(clips.length ? `Added ${vids} video clip${vids === 1 ? "" : "s"} and ${clips.length - vids} photo${clips.length - vids === 1 ? "" : "s"}. Your other visuals were kept.` : "Nothing new was found. Your existing visuals were kept.");
     } catch (e) { setMsg(e instanceof Error ? e.message : "Visual search failed."); }
     setBusy(false);
   };
@@ -1053,7 +1033,16 @@ DELIVERY: voiceover
   const loadScript = () => {
     const p = parseScript(scriptText);
     if (!p.scenes.length) { setMsg("Paste a script first. Use the prompt in Step 1 to get one from Claude or ChatGPT."); return null; }
-    const list = p.scenes.map((d, i) => mkScene(d, i, wpm));
+    // Scenes whose narration is unchanged keep the visuals you added yourself (uploads or camera clips).
+    const norm = (x: string) => x.replace(/\s+/g, " ").trim().toLowerCase();
+    const pool = scenes.filter((s) => s.clips.some(mine));
+    const list = p.scenes.map((d, i) => {
+      const sc = mkScene(d, i, wpm);
+      const o = pool.find((x) => norm(x.text) === norm(d.text));
+      if (!o) return sc;
+      pool.splice(pool.indexOf(o), 1);
+      return { ...sc, clips: o.clips, ...(o.onCam ? { onCam: true, duration: o.duration } : {}) };
+    });
     setScenes(list); setSelId(list[0].id);
     return { meta: p.meta, list };
   };
@@ -1061,7 +1050,8 @@ DELIVERY: voiceover
     const r = loadScript();
     if (!r) return;
     fillMeta(r.meta, r.list);
-    setMsg(`Loaded ${r.list.length} scenes. Check them in the Scenes tab, then press Generate video.`);
+    const kept = r.list.filter((s) => s.clips.length).length;
+    setMsg(`Loaded ${r.list.length} scenes${kept ? `, keeping your own visuals in ${kept}` : ""}. Check them in the Scenes tab, then press Generate video.`);
   };
 
   const narrate = async (list: Scene[]) => {
@@ -1123,19 +1113,20 @@ DELIVERY: voiceover
       setStage(3);
       const withPics: Scene[] = [];
       aiSt.current = { fails: 0 };
-      creditsRef.current = [];
       let failure = "";
       for (let i = 0; i < next.length; i++) {
         const s = next[i];
-        if (s.onCam && s.clips.length) { withPics.push(s); continue; }
+        if (s.clips.some(mine)) { withPics.push(s); continue; } // your own visuals stay; only scenes without them get generated ones
         setMsg(source !== "stock" ? `Generating photoreal visuals for scene ${i + 1} of ${next.length} (can take a minute each)…` : `Finding multiple unique visuals for scene ${i + 1} of ${next.length}…`);
         const n = shotsFor(source, s.duration, moving);
         try {
-          const clips = await gatherClips({ keys, source, topic: topic.trim(), f: fmt, res, moving, st: aiSt.current, credits: creditsRef.current }, s, n);
+          const clips = await gatherClips({ keys, source, topic: topic.trim(), f: fmt, res, moving, st: aiSt.current }, s, n);
           withPics.push({ ...s, clips });
         } catch (e) { failure = e instanceof Error ? e.message : ""; withPics.push(s); }
       }
-      if (failure) note = ` Some visuals failed: ${failure}`;
+      const keptOwn = withPics.filter((x) => x.clips.some(mine)).length;
+      if (keptOwn) note += ` Kept your own visuals in ${keptOwn} scene(s).`;
+      if (failure) note += ` Some visuals failed: ${failure}`;
       const filled = borrowVisuals(withPics);
       const reused = withPics.filter((x) => !x.clips.length).length;
       const bare = filled.filter((x) => !x.clips.length).length;
@@ -1144,7 +1135,6 @@ DELIVERY: voiceover
       next = filled;
       setScenes(next);
       fillMeta(r.meta, next);
-      setVDesc((d) => withCredits(d, creditsRef.current));
       setStage(4); setMsg(`Rendering video in real time (${clock(len)}). Keep this tab open and in front.${note}`);
       setAutoRender(true);
     } catch (e) { setMsg(e instanceof Error ? e.message : "Generation failed."); setStage(0); }
@@ -1357,10 +1347,10 @@ DELIVERY: voiceover
                 <select className={inp} value={source} onChange={(e) => setSource(e.target.value as Source)}>
                   <option value="mix">Both: AI images + stock video (free, recommended)</option>
                   <option value="ai">AI photoreal images only (free, no key)</option>
-                  <option value="stock">Stock footage (Wikimedia Commons free; Pixabay/Pexels keys optional)</option>
+                  <option value="stock">Stock footage (Pexels and Pixabay; AI pictures fill any gaps)</option>
                 </select>
               </Field>
-              {source !== "stock" && <p className="text-xs text-slate-500">{source === "mix" ? "Each scene gets AI photos plus real video clips (video comes from Wikimedia Commons with no key, plus Pexels and Pixabay when the server has their keys and you enter the access code)." : "Each scene gets AI photos that match your VISUAL lines. "}Allow about 1 to 2 minutes per scene before rendering starts.</p>}
+              {source !== "stock" && <p className="text-xs text-slate-500">{source === "mix" ? "Each scene gets AI photos plus real video clips (the video clips come from Pexels and Pixabay, which needs their keys on the server and your access code; without them every picture is AI)." : "Each scene gets AI photos that match your VISUAL lines. "}Allow about 1 to 2 minutes per scene before rendering starts.</p>}
               <label className="flex items-start gap-2 rounded-md border border-slate-800 p-2 text-xs text-slate-400">
                 <input type="checkbox" className="mt-0.5" checked={moving} onChange={(e) => setMoving(e.target.checked)} />
                 <span><b className="text-slate-200">Use moving video footage.</b> Finds multiple video clips per scene. Rich visual assets automatically fill in to pack every scene with high visual variety.</span>
@@ -1382,7 +1372,7 @@ DELIVERY: voiceover
                 <div className="mt-3 space-y-3">
                   <Field l="Access code"><input type="password" className={inp} value={code} onChange={(e) => setCode(e.target.value.trim())} /></Field>
                   {serverMsg && <p className="text-xs text-slate-300">{serverMsg}{serverMsg === "Connected." && ` AI voiceover: ${server.openai ? "on" : "off"}. Pexels: ${server.pexels ? "on" : "off"}. Pixabay: ${server.pixabay ? "on" : "off"}.`}</p>}
-                  <p className="text-xs text-slate-500">Provider keys now live on the server (Netlify) and never reach this browser. Enter the access code you set there to unlock AI voiceover and Pexels or Pixabay stock footage. Without it, the app still uses free AI images, Wikimedia Commons footage and your own uploads. You can also upload your own clips per scene in the Scenes tab.</p>
+                  <p className="text-xs text-slate-500">Provider keys now live on the server (Netlify) and never reach this browser. Enter the access code you set there to unlock AI voiceover and Pexels or Pixabay stock footage. Without it, the app still uses free AI images and your own uploads. When Pexels or Pixabay visuals are used, a credit line is added to the description automatically. You can also upload your own clips per scene in the Scenes tab.</p>
                 </div>
               </details>
             </>)}
@@ -1408,9 +1398,24 @@ DELIVERY: voiceover
                 <Field l="Duration (seconds)"><input type="number" min={1} step={0.5} className={inp} value={Number(sel.duration.toFixed(1))} onChange={(e) => patch({ duration: Math.max(1, +e.target.value), marks: undefined })} /></Field>
                 <div className="flex gap-2">{PALETTES.map((p, i) => <button key={i} onClick={() => patch({ palette: i })} className={`h-7 w-7 rounded-full border-2 ${sel.palette === i ? "border-white" : "border-transparent"}`} style={{ background: `linear-gradient(135deg,${p[0]},${p[1]})` }} />)}</div>
                 <Field l="Visual search keywords"><input className={inp} value={sel.visual} onChange={(e) => patch({ visual: e.target.value })} /></Field>
-                <button className={btn()} disabled={busy} onClick={findPhoto}>Find more visuals for this scene</button>
-                <p className="text-xs text-slate-500">{sel.clips.length} asset(s) packed in this scene.</p>
-                <Field l="Upload your own images and videos (select several)"><input type="file" multiple accept="image/*,video/*" className="text-xs" onChange={(e) => attach(e.target.files)} /></Field>
+                <button className={btn()} disabled={busy} onClick={findPhoto}>Find and add more visuals</button>
+                <p className="text-xs text-slate-500">New visuals are added to the end of the list. Nothing you uploaded is replaced.</p>
+                <div className="space-y-1.5">
+                  <p className="text-xs text-slate-400">{sel.clips.length ? `${sel.clips.length} visual${sel.clips.length === 1 ? "" : "s"} in this scene, shown in this order:` : "No visuals in this scene yet."}{sel.onCam ? " (Camera scene: only the first one is used.)" : ""}</p>
+                  {sel.clips.map((c, k) => (
+                    <div key={`${c.url}-${k}`} className="flex items-center gap-2 rounded-md border border-slate-800 p-1.5">
+                      <span className="w-5 text-center text-xs text-slate-500">{k + 1}</span>
+                      {c.kind === "video"
+                        ? <video src={c.url} muted playsInline preload="metadata" className="h-12 w-20 shrink-0 rounded bg-black object-cover" />
+                        : <img src={c.url} alt="" className="h-12 w-20 shrink-0 rounded bg-black object-cover" />}
+                      <span className="min-w-0 flex-1 truncate text-xs text-slate-300">{originOf(c)}</span>
+                      <button aria-label="Move earlier" disabled={k === 0} className="px-2 py-1.5 text-slate-400 hover:text-white disabled:opacity-30" onClick={() => moveClip(k, -1)}>↑</button>
+                      <button aria-label="Move later" disabled={k === sel.clips.length - 1} className="px-2 py-1.5 text-slate-400 hover:text-white disabled:opacity-30" onClick={() => moveClip(k, 1)}>↓</button>
+                      <button aria-label="Remove this visual" className="px-2 py-1.5 text-slate-400 hover:text-red-400" onClick={() => dropClip(k)}>✕</button>
+                    </div>
+                  ))}
+                </div>
+                <Field l="Add your own images and videos (select several; they are added to the list)"><input type="file" multiple accept="image/*,video/*" className="text-xs" onChange={(e) => { attach(e.target.files); e.target.value = ""; }} /></Field>
               </div>)}
             </>)}
 

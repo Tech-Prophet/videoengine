@@ -5,7 +5,7 @@ A browser-based video maker. Paste a script, and it splits it into scenes, finds
 ## What it does today
 
 - Turns a pasted script (Markdown or JSON) into editable scenes with a timeline and live preview.
-- Finds visuals per scene: free AI photos (Pollinations), stock video and photos (Wikimedia Commons with no key; Pexels and Pixabay when the server has their keys), or your own uploads. Every scene can mix them.
+- Finds visuals per scene: free AI photos (Pollinations), stock video and photos (Pexels and Pixabay, when the server has their keys), or your own uploads. Every scene can mix them. In the Scenes tab you can add more visuals, remove one or reorder them; uploads are never replaced by "Find and add more visuals" or by Generate video.
 - Voiceover: AI voice through OpenAI (server key), your own recording, or an uploaded file. Background music upload.
 - Burned-in captions, intro text, slow zoom and pan, crossfades, and a camera and microphone recorder.
 - Publish tab: title, description, tags, thumbnail (with download), and a checklist.
@@ -53,7 +53,7 @@ Other commands: `npm run build` (type-check and build) and `npm run lint`.
 - Export records in real time, so the tab must stay open and in front for the full length of the video. The file is WebM on most browsers; MP4 only where the browser records it.
 - Pollinations is used without a key. Its current free limits and commercial-use terms have not been verified.
 - Live calls to OpenAI, Pexels and Pixabay have not been tested end to end. The functions have local mock tests only.
-- Some clips need their credit in the video description; the app adds Wikimedia Commons credits automatically.
+- Pexels and Pixabay ask for a visible source. While their visuals are in the video, the app keeps a credit line in the description automatically (it names the sites, not individual photographers).
 
 ## Roadmap
 
