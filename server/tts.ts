@@ -1,6 +1,9 @@
 import { guard, json, type Env } from "./shared.ts";
 
-const VOICES = ["alloy", "nova", "onyx", "echo", "shimmer", "fable"]; // OpenAI voices only
+const VOICES = ["alloy", "nova", "onyx", "echo", "shimmer", "fable"]; // OpenAI voices
+// Cloudflare: "melo" = MeloTTS (one female voice, cheapest on the free allowance). The rest are Deepgram Aura-1 speakers.
+const AURA = ["orion", "arcas", "perseus", "angus", "orpheus", "helios", "zeus", "asteria", "luna", "athena", "hera", "stella"];
+const CF_VOICES = ["melo", ...AURA];
 
 export type VoiceProvider = "cloudflare" | "openai" | "";
 // Which voice service this server will use. Cloudflare comes first because it has a free daily allowance.
@@ -15,14 +18,15 @@ export function voiceProvider(env: Env): VoiceProvider {
 
 const MP3 = { "content-type": "audio/mpeg" };
 
-// Cloudflare Workers AI, MeloTTS model (English). Free daily allowance; keys stay on the server.
-async function viaCloudflare(env: Env, text: string): Promise<Response> {
+// Cloudflare Workers AI: MeloTTS (English) or Deepgram Aura-1. Free daily allowance; keys stay on the server.
+async function viaCloudflare(env: Env, text: string, voice: string): Promise<Response> {
   const id = env.CLOUDFLARE_ACCOUNT_ID ?? "", token = env.CLOUDFLARE_API_TOKEN ?? "";
   if (!/^[0-9a-f]{32}$/i.test(id)) return json({ error: "CLOUDFLARE_ACCOUNT_ID on the server looks wrong. It should be 32 letters and numbers." }, 500);
-  const r = await fetch(`https://api.cloudflare.com/client/v4/accounts/${id}/ai/run/@cf/myshell-ai/melotts`, {
+  const aura = voice !== "melo";
+  const r = await fetch(`https://api.cloudflare.com/client/v4/accounts/${id}/ai/run/${aura ? "@cf/deepgram/aura-1" : "@cf/myshell-ai/melotts"}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ prompt: text, lang: "en" }),
+    body: JSON.stringify(aura ? { text, speaker: voice } : { prompt: text, lang: "en" }),
   });
   if (!r.ok) {
     const d = (await r.json().catch(() => null)) as { errors?: { code?: unknown }[] } | null;
@@ -33,8 +37,8 @@ async function viaCloudflare(env: Env, text: string): Promise<Response> {
     if (r.status >= 500) return json({ error: `Cloudflare had a problem (${r.status}). Try again shortly.` }, 502);
     return json({ error: `Cloudflare refused the request (${r.status}${why ? `, code ${why}` : ""}).` }, 424);
   }
-  // The model can answer with raw MP3 or with JSON holding base64 audio. Both are handled.
-  if ((r.headers.get("content-type") ?? "").startsWith("audio/")) return new Response(r.body, { status: 200, headers: MP3 });
+  // A model can answer with raw audio or with JSON holding base64 audio. Both are handled.
+  if (!(r.headers.get("content-type") ?? "").includes("json")) return new Response(r.body, { status: 200, headers: MP3 });
   const d = (await r.json().catch(() => null)) as { result?: { audio?: unknown } | string; audio?: unknown } | null;
   const b64 = typeof d?.result === "string" ? d.result : typeof d?.result === "object" && d.result ? d.result.audio : d?.audio;
   if (typeof b64 !== "string" || !b64) return json({ error: "Cloudflare replied, but without any audio." }, 502);
@@ -78,5 +82,6 @@ export async function tts(req: Request, env: Env) {
   const voice = typeof body.voice === "string" && VOICES.includes(body.voice) ? body.voice : "alloy";
   if (!text || text.length > 4000) return json({ error: "Text must be 1 to 4000 characters." }, 400);
 
-  return provider === "cloudflare" ? viaCloudflare(env, text) : viaOpenAI(env, text, voice);
+  const cfVoice = typeof body.voice === "string" && CF_VOICES.includes(body.voice) ? body.voice : "melo";
+  return provider === "cloudflare" ? viaCloudflare(env, text, cfVoice) : viaOpenAI(env, text, voice);
 }

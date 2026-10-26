@@ -669,6 +669,7 @@ export default function App() {
   // Each value is the access code when that provider has a key on the server, otherwise "".
   const keys = { pixabay: server.pixabay ? code : "", pexels: server.pexels ? code : "", voice: server.voice ? code : "" };
   const [oaVoice, setOaVoice] = useState("alloy");
+  const [cfVoice, setCfVoice] = useState("orion");
   const [musicUrl, setMusicUrl] = useState("");
   const [musicVol, setMusicVol] = useState(0.15);
   const [voiceUrl, setVoiceUrl] = useState("");
@@ -1086,7 +1087,7 @@ DELIVERY: voiceover
         setMsg(`Recording narration ${i + 1} of ${list.length} (sentence ${j + 1} of ${sents.length})…`);
         const pcs: Float32Array[] = [];
         for (const piece of splitText(sents[j])) {
-          const b = await speak(keys.voice, piece, oaVoice);
+          const b = await speak(keys.voice, piece, server.voiceProvider === "cloudflare" ? cfVoice : oaVoice);
           pcs.push((await ac.decodeAudioData(await b.arrayBuffer())).getChannelData(0).slice());
         }
         const n = pcs.reduce((a, c) => a + c.length, 0), d = new Float32Array(n);
@@ -1442,7 +1443,11 @@ DELIVERY: voiceover
             {tab === "audio" && (<>
               <h3 className="text-sm font-semibold">Voiceover</h3>
               {server.voiceProvider === "openai" && <Field l="AI voice"><select className={inp} value={oaVoice} onChange={(e) => setOaVoice(e.target.value)}>{["alloy", "nova", "onyx", "echo", "shimmer", "fable"].map((v) => <option key={v}>{v}</option>)}</select></Field>}
-              <p className="text-xs text-slate-500">{server.voice ? (server.voiceProvider === "cloudflare" ? "Built-in English voice (Cloudflare, free daily allowance). It makes one voice, so there is no voice list." : "Voice from OpenAI. Pick one above.") : "AI voiceover is off. Enter the access code in the Create tab, and set up a voice service on the server (see the README)."}</p>
+              {server.voiceProvider === "cloudflare" && <Field l="AI voice"><select className={inp} value={cfVoice} onChange={(e) => setCfVoice(e.target.value)}>
+                <optgroup label="Male">{["orion", "arcas", "perseus", "angus", "orpheus", "helios", "zeus"].map((v) => <option key={v} value={v}>{v[0].toUpperCase() + v.slice(1)}</option>)}</optgroup>
+                <optgroup label="Female">{["asteria", "luna", "athena", "hera", "stella"].map((v) => <option key={v} value={v}>{v[0].toUpperCase() + v.slice(1)}</option>)}<option value="melo">Standard (uses far less of the free allowance)</option></optgroup>
+              </select></Field>}
+              <p className="text-xs text-slate-500">{server.voice ? (server.voiceProvider === "cloudflare" ? "Voices run on Cloudflare's free daily allowance. The named voices sound better but use it up faster (roughly 8 minutes of speech a day); “Standard” lasts much longer. Male and female labels are from Deepgram's published voice list, so listen before a long video." : "Voice from OpenAI. Pick one above.") : "AI voiceover is off. Enter the access code in the Create tab, and set up a voice service on the server (see the README)."}</p>
               <button className={btn(true)} disabled={busy} onClick={aiVoiceOnly}>Record AI voiceover</button>
               <Field l="Browser voice (preview)"><select className={inp} value={voiceName} onChange={(e) => setVoiceName(e.target.value)}>{voices.map((v) => <option key={v.name}>{v.name}</option>)}</select></Field>
               <div className="flex gap-2"><button className={btn()} onClick={previewVoice}>Preview</button><button className={btn()} onClick={() => speechSynthesis.cancel()}>Stop</button></div>

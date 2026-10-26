@@ -25,7 +25,7 @@ API keys never go in the browser. Three Netlify Functions hold them on the serve
 | `/api/stock` | Pexels and Pixabay search | `PEXELS_API_KEY`, `PIXABAY_API_KEY` |
 | `/api/status` | Tells the app which keys exist (true or false only) | none |
 
-If both voice services are set, Cloudflare is used (set `TTS_PROVIDER=openai` to prefer OpenAI). The Cloudflare voice is one English voice; OpenAI offers six.
+If both voice services are set, Cloudflare is used (set `TTS_PROVIDER=openai` to prefer OpenAI). Cloudflare offers 12 named English voices (Deepgram Aura-1, male and female) plus one standard female voice (MeloTTS). The named voices use the free daily allowance about 70 times faster than the standard one (roughly 8 minutes of speech a day against many hours). OpenAI offers six voices.
 
 The OpenAI key is named `OPENAI_TTS_API_KEY` on purpose. Netlify's AI Gateway automatically fills a variable called `OPENAI_API_KEY` with its own key, which OpenAI rejects when the app calls OpenAI directly, so the app ignores that name.
 
