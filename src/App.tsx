@@ -1300,7 +1300,7 @@ DELIVERY: voiceover
   const switchFmt = (f: Fmt) => { setFmt(f); setMinutes(f === "short" ? 1 : 3); setMinSec(f === "short" ? 0 : 120); };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden" style={{ fontFamily: FONT }}>
+    <div className="vtx-app flex min-h-0 flex-1 flex-col overflow-hidden" style={{ fontFamily: FONT }}>
       <header className="flex flex-wrap items-center gap-2 sm:gap-3 border-b border-slate-800 bg-slate-950 px-3 sm:px-4 py-2.5">
         <div className="text-base sm:text-lg font-extrabold tracking-tight">Vortex <span className="text-violet-400">AI Studio</span></div>
         <div className="ml-2 flex rounded-md bg-slate-900 p-0.5 text-xs sm:text-sm">
@@ -1324,14 +1324,14 @@ DELIVERY: voiceover
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-        <aside className="flex w-full lg:w-[400px] shrink-0 flex-col border-r border-b lg:border-b-0 border-slate-800 bg-slate-950 max-h-[45dvh] lg:max-h-none overflow-y-auto">
+      <div className="vtx-body flex min-h-0 flex-1 flex-col lg:flex-row">
+        <aside className="vtx-side flex w-full lg:w-[400px] shrink-0 flex-col border-r border-b lg:border-b-0 border-slate-800 bg-slate-950 max-h-[45dvh] lg:max-h-none overflow-y-auto">
           <nav className="flex border-b border-slate-800 overflow-x-auto">
             {tabs.map(([k, l]) => (
               <button key={k} onClick={() => setTab(k)} className={`flex-1 min-w-[70px] py-2.5 text-xs sm:text-sm whitespace-nowrap ${tab === k ? "border-b-2 border-violet-500 text-white" : "text-slate-400 hover:text-slate-200"}`}>{l}</button>
             ))}
           </nav>
-          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3 sm:p-4">
+          <div className="vtx-side-inner min-h-0 flex-1 space-y-4 overflow-y-auto p-3 sm:p-4">
             {tab === "create" && (<>
               <Field l="Video topic or title"><input className={inp} value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="e.g. 5 habits for productivity" /></Field>
 
@@ -1456,9 +1456,9 @@ DELIVERY: voiceover
           </div>
         </aside>
 
-        <main className="flex min-w-0 flex-1 flex-col bg-black/40">
-          <div className="flex min-h-0 flex-1 items-center justify-center p-2 sm:p-4">
-            <div className="relative" style={fmt === "long" ? { width: "min(100%, 880px)", aspectRatio: `${W}/${H}` } : { height: "min(100%, 560px)", aspectRatio: `${W}/${H}` }}>
+        <main className="vtx-main flex min-w-0 flex-1 flex-col bg-black/40">
+          <div className="vtx-stage flex min-h-0 flex-1 items-center justify-center p-2 sm:p-4">
+            <div className={`relative ${fmt === "short" ? "vtx-short" : ""}`} style={fmt === "long" ? { width: "min(100%, 880px)", aspectRatio: `${W}/${H}` } : { aspectRatio: `${W}/${H}` }}>
               <canvas ref={canvasRef} width={W} height={H} className="h-full w-full rounded-md shadow-2xl object-contain" />
               {safe && fmt === "short" && <div className="pointer-events-none absolute inset-x-0 top-0 bottom-0 rounded-md border border-dashed border-amber-400/50" style={{ margin: "6% 14% 22% 5%" }} />}
             </div>

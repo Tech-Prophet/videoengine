@@ -65,6 +65,38 @@ body {
   margin: 0;
 }
 
+/* Vertical (9:16) preview: its height used to be set inline. */
+.vtx-short {
+  height: min(100%, 560px);
+}
+
+/* Phones and small tablets held upright: let the whole page scroll down instead of squeezing the
+   controls, preview and timeline into fixed-height boxes (which made them overlap and get cut off).
+   Landscape and wide screens are not affected. !important is needed to beat the Tailwind classes. */
+@media (max-width: 1023px) and (orientation: portrait) {
+  body {
+    overflow-y: auto !important;
+  }
+  #root {
+    height: auto;
+    min-height: 100dvh;
+  }
+  .vtx-app,
+  .vtx-body,
+  .vtx-side,
+  .vtx-side-inner,
+  .vtx-main,
+  .vtx-stage {
+    flex: none !important;
+    min-height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+  .vtx-short {
+    height: min(60dvh, 560px);
+  }
+}
+
 h1,
 h2 {
   font-family: var(--heading);
