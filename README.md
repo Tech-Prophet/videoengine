@@ -6,7 +6,7 @@ A browser-based video maker. Paste a script, and it splits it into scenes, finds
 
 - Turns a pasted script (Markdown or JSON) into editable scenes with a timeline and live preview.
 - Finds visuals per scene: free AI photos (Pollinations), stock video and photos (Pexels and Pixabay, when the server has their keys), or your own uploads. Every scene can mix them. In the Scenes tab you can add more visuals, remove one or reorder them; uploads are never replaced by "Find and add more visuals" or by Generate video.
-- Voiceover: built-in AI voice (free Cloudflare Workers AI voice, or OpenAI if you prefer), your own recording, or an uploaded file. Background music upload.
+- Voiceover: built-in AI voice (free Cloudflare Workers AI voice, or OpenAI if you prefer), your own recording, or an uploaded file. Background music: four built-in styles made on the device (calm, cinematic, upbeat, lo-fi; simple synthesised loops, no licences involved) or your own upload.
 - Share: sends the finished video through the phone's share menu (nothing is uploaded by the app).
 - Burned-in captions, intro text, slow zoom and pan, crossfades, and a camera and microphone recorder.
 - Publish tab: title, description, tags, thumbnail (with download), and a checklist.

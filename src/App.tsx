@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { makeMusic, MUSIC_STYLES } from "./music.ts";
+import type { MusicStyle } from "./music.ts";
 
 type Fmt = "long" | "short";
 type Tab = "create" | "scenes" | "audio" | "camera" | "publish";
@@ -672,6 +674,8 @@ export default function App() {
   const [cfVoice, setCfVoice] = useState("orion");
   const [musicUrl, setMusicUrl] = useState("");
   const [musicVol, setMusicVol] = useState(0.15);
+  const [musicStyle, setMusicStyle] = useState<MusicStyle>("calm");
+  const [makingMusic, setMakingMusic] = useState(false);
   const [voiceUrl, setVoiceUrl] = useState("");
   const [voiceVol, setVoiceVol] = useState(1);
   const [voiceDur, setVoiceDur] = useState(0);
@@ -888,7 +892,11 @@ DELIVERY: voiceover
   }, []);
 
   useEffect(() => {
-    if (!musicUrl) return;
+    if (!musicUrl) {
+      const old = tracks.current.music; // music was removed: stop it and empty the player
+      if (old) { old.el.pause(); old.el.removeAttribute("src"); }
+      return;
+    }
     const T = track("music"); T.el.src = musicUrl; T.el.loop = true;
   }, [musicUrl]);
   useEffect(() => {
@@ -1035,6 +1043,16 @@ DELIVERY: voiceover
   const copyShareText = async () => {
     try { await navigator.clipboard.writeText(shareText); setMsg("Title and description copied."); }
     catch { setMsg("Couldn't copy automatically. Select the text in the boxes above and copy it by hand."); }
+  };
+  const makeBgMusic = async () => {
+    setMakingMusic(true); setMsg("Making background music (a few seconds)…");
+    await new Promise((r) => setTimeout(r, 50)); // lets the message show before the work starts
+    try {
+      const sr = 22050;
+      setMusicUrl(URL.createObjectURL(toWav(makeMusic(musicStyle, sr), sr)));
+      setMsg("Background music added. It loops under the whole video. Set its volume below.");
+    } catch { setMsg("Could not make the music on this device."); }
+    setMakingMusic(false);
   };
   const copyPrompt = async () => {
     try { await navigator.clipboard.writeText(aiPrompt); setMsg("Prompt copied. Paste it into Claude or ChatGPT, then paste the reply into the “Paste the script here” box."); }
@@ -1457,8 +1475,14 @@ DELIVERY: voiceover
                 <button className={btn()} disabled={!voiceDur} onClick={fitVoice}>Fit scenes to voiceover</button>
               </>)}
               <h3 className="border-t border-slate-800 pt-4 text-sm font-semibold">Background music</h3>
-              <Field l="Upload music"><input type="file" accept="audio/*" className="text-xs" onChange={(e) => e.target.files?.[0] && setMusicUrl(URL.createObjectURL(e.target.files[0]))} /></Field>
-              {musicUrl && <Field l={`Music volume: ${Math.round(musicVol * 100)}%`}><input type="range" min={0} max={1} step={0.05} value={musicVol} onChange={(e) => setMusicVol(+e.target.value)} className="w-full accent-violet-500" /></Field>}
+              <Field l="Built-in music style"><select className={inp} value={musicStyle} onChange={(e) => setMusicStyle(e.target.value as MusicStyle)}>{MUSIC_STYLES.map((m) => <option key={m.id} value={m.id}>{m.label} ({m.note})</option>)}</select></Field>
+              <button className={btn(true)} disabled={makingMusic} onClick={() => void makeBgMusic()}>{makingMusic ? "Making music…" : "Make background music"}</button>
+              <p className="text-xs text-slate-500">Made on your device, so there is nothing to download and no licence to worry about. It is a short loop of simple synthesised instruments, so expect a plain backing track, not a studio recording. You can make another style to replace it.</p>
+              <Field l="Or upload your own music"><input type="file" accept="audio/*" className="text-xs" onChange={(e) => e.target.files?.[0] && setMusicUrl(URL.createObjectURL(e.target.files[0]))} /></Field>
+              {musicUrl && (<>
+                <Field l={`Music volume: ${Math.round(musicVol * 100)}%`}><input type="range" min={0} max={1} step={0.05} value={musicVol} onChange={(e) => setMusicVol(+e.target.value)} className="w-full accent-violet-500" /></Field>
+                <button className={btn()} onClick={() => setMusicUrl("")}>Remove background music</button>
+              </>)}
             </>)}
 
             {tab === "camera" && (<>
