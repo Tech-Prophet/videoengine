@@ -22,7 +22,16 @@ export default async (req: Request) => {
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
     body: JSON.stringify({ model: "tts-1", voice, input: text }),
   });
-  if (!r.ok) return json({ error: `The voice provider returned ${r.status}.` }, r.status === 429 ? 429 : 502);
+  if (!r.ok) {
+    // Say what really went wrong, without ever repeating OpenAI's raw message (it can contain part of a key).
+    const d = (await r.json().catch(() => null)) as { error?: { code?: unknown } } | null;
+    const why = typeof d?.error?.code === "string" ? d.error.code : "";
+    if (r.status === 401 || r.status === 403) return json({ error: "OpenAI rejected the key saved on the server. It may be wrong, expired or revoked." }, 424);
+    if (r.status === 429 && why === "insufficient_quota") return json({ error: "The OpenAI account has no credit or quota left. Add credit on the OpenAI account, then try again." }, 402);
+    if (r.status === 429) return json({ error: "OpenAI is rate limiting requests. Wait a minute and try again." }, 429);
+    if (r.status >= 500) return json({ error: `OpenAI had a problem (${r.status}). Try again shortly.` }, 502);
+    return json({ error: `OpenAI refused the request (${r.status}${why ? `, ${why}` : ""}).` }, 424);
+  }
   return new Response(r.body, { status: 200, headers: { "content-type": "audio/mpeg" } });
 };
 

@@ -460,6 +460,7 @@ function loadSaved(): Saved | null {
 
 /* ---------- NARRATION ---------- */
 async function speak(key: string, text: string, voice: string) {
+  let last = "";
   for (let a = 0; a < 3; a++) {
     const r = await fetch("/api/tts", {
       method: "POST",
@@ -467,13 +468,12 @@ async function speak(key: string, text: string, voice: string) {
       body: JSON.stringify({ text, voice }),
     });
     if (r.ok) return r.blob();
-    if (![429, 502, 503, 504].includes(r.status)) {
-      const why = await r.json().then((j: { error?: string }) => j.error).catch(() => undefined);
-      throw new Error(why || `Voice API returned ${r.status}.`);
-    }
+    const why = await r.json().then((j: { error?: string }) => j.error).catch(() => undefined);
+    if (![429, 502, 503, 504].includes(r.status)) throw new Error(why || `Voice API returned ${r.status}.`);
+    last = why || `Voice API returned ${r.status}.`;
     await new Promise((res) => setTimeout(res, 1500 * (a + 1)));
   }
-  throw new Error("Voice API is busy.");
+  throw new Error(last || "Voice API is busy.");
 }
 const splitText = (t: string, max = 3500) => {
   const out: string[] = [];
