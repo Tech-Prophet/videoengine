@@ -680,7 +680,7 @@ export default function App() {
   const [camMode, setCamMode] = useState<"video" | "audio">("video");
   const [recording, setRecording] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [file, setFile] = useState<{ url: string; name: string; mb: number } | null>(null);
+  const [file, setFile] = useState<{ url: string; name: string; mb: number; blob: Blob } | null>(null);
   const [vTitle, setVTitle] = useState(saved?.vTitle ?? "");
   const [vDesc, setVDesc] = useState(saved?.vDesc ?? "");
   const [vTags, setVTags] = useState(saved?.vTags ?? "");
@@ -1016,6 +1016,25 @@ DELIVERY: voiceover
     a.href = URL.createObjectURL(bl); a.download = "thumbnail.jpg"; a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   };
+  // Share: the phone's own share sheet (WhatsApp, Telegram, Drive, YouTube...). The video file is sent as it is; nothing is uploaded by this app.
+  const shareText = [vTitle.trim(), vDesc.trim()].filter(Boolean).join("\n\n");
+  const shareVideo = async () => {
+    if (!file) { setMsg("Render the video first, then share it."); return; }
+    const f = new File([file.blob], file.name, { type: file.blob.type || "video/webm" });
+    try {
+      if (typeof navigator.canShare === "function" && navigator.canShare({ files: [f] })) {
+        await navigator.share({ files: [f], title: vTitle.trim() || undefined, text: shareText || undefined });
+        setMsg("Shared. If the other app dropped the title or description, use “Copy title and description”.");
+      } else setMsg("This browser cannot share files. Download the video, then attach it in the app you want. “Copy title and description” helps with the text.");
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") return; // you closed the share sheet
+      setMsg("Sharing failed. The file may be too big for that app. Download it and attach it by hand instead.");
+    }
+  };
+  const copyShareText = async () => {
+    try { await navigator.clipboard.writeText(shareText); setMsg("Title and description copied."); }
+    catch { setMsg("Couldn't copy automatically. Select the text in the boxes above and copy it by hand."); }
+  };
   const copyPrompt = async () => {
     try { await navigator.clipboard.writeText(aiPrompt); setMsg("Prompt copied. Paste it into Claude or ChatGPT, then paste the reply in Step 2."); }
     catch { setMsg("Couldn't copy automatically. Open “Show prompt” and copy it by hand."); }
@@ -1252,7 +1271,7 @@ DELIVERY: voiceover
         return;
       }
       const took = (performance.now() - began) / 1000;
-      setFile({ url: URL.createObjectURL(blob), name: `vortex-${fmt}-${res}p.${type === "video/mp4" ? "mp4" : "webm"}`, mb: blob.size / 1e6 });
+      setFile({ url: URL.createObjectURL(blob), name: `vortex-${fmt}-${res}p.${type === "video/mp4" ? "mp4" : "webm"}`, mb: blob.size / 1e6, blob });
       setExporting(false); setStage(5);
       setMsg(`Recorded ${clock(took)} of ${clock(live.current.total)} planned.${hidden ? " The tab was hidden while rendering, so the video may be incomplete." : ""}${attempt > 0 ? " Saved without audio." : ""}`);
     };
@@ -1309,6 +1328,7 @@ DELIVERY: voiceover
         <span className="text-xs sm:text-sm text-slate-400 hidden md:inline">{W}×{H} · {clock(total)}</span>
         <div className="ml-auto flex items-center gap-2 sm:gap-3">
           {msg && <span className="basis-full text-xs text-amber-300 sm:basis-auto sm:max-w-xs sm:truncate sm:text-slate-400" title={msg}>{msg}</span>}
+          {file && <button onClick={() => void shareVideo()} className={`${btn()} text-xs sm:text-sm`}>Share</button>}
           {file && <a href={file.url} download={file.name} className={`${btn(true)} text-xs sm:text-sm`}>Download {file.mb.toFixed(1)} MB</a>}
           <button onClick={() => void exportVideo()} disabled={exporting || busy} className={`${btn()} text-xs sm:text-sm`}>{exporting ? `Rendering ${Math.round((t / (total || 1)) * 100)}%` : "Re-render"}</button>
         </div>
@@ -1454,6 +1474,12 @@ DELIVERY: voiceover
               <canvas ref={thumbRef} width={1280} height={720} className="w-full rounded-md" />
               <button className={btn()} onClick={grabFrame}>Use current preview frame</button>
               <button className={btn()} onClick={() => void downloadThumb()}>Download thumbnail</button>
+              <div className="space-y-2 border-t border-slate-800 pt-4">
+                <h3 className="text-sm font-semibold">Share</h3>
+                <button className={`${btn(true)} w-full`} disabled={!file} onClick={() => void shareVideo()}>{file ? `Share video (${file.mb.toFixed(1)} MB)` : "Share video (render it first)"}</button>
+                <button className={`${btn()} w-full`} disabled={!shareText} onClick={() => void copyShareText()}>Copy title and description</button>
+                <p className="text-xs text-slate-500">Opens your phone's share menu so you can send the video to WhatsApp, Telegram, Google Drive and more. The video goes straight from this device to the app you pick; this app does not upload or host it. Desktop browsers often cannot share files, so use Download there.</p>
+              </div>
               <ul className="space-y-1 text-xs">
                 {checks.map((c) => <li key={c.t} className={c.ok ? "text-emerald-400" : "text-slate-500"}>{c.ok ? "✓" : "○"} {c.t}</li>)}
               </ul>
