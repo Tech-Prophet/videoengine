@@ -7,7 +7,7 @@ export default async (req: Request) => {
   const denied = guard(req);
   if (denied) return denied;
   return json({
-    openai: !!process.env.OPENAI_API_KEY,
+    openai: !!process.env.OPENAI_TTS_API_KEY,
     pexels: !!process.env.PEXELS_API_KEY,
     pixabay: !!process.env.PIXABAY_API_KEY,
   });

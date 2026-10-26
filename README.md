@@ -20,9 +20,11 @@ API keys never go in the browser. Three Netlify Functions hold them on the serve
 
 | Function | Purpose | Needs |
 | --- | --- | --- |
-| `/api/tts` | AI voiceover | `OPENAI_API_KEY` |
+| `/api/tts` | AI voiceover | `OPENAI_TTS_API_KEY` |
 | `/api/stock` | Pexels and Pixabay search | `PEXELS_API_KEY`, `PIXABAY_API_KEY` |
 | `/api/status` | Tells the app which keys exist (true or false only) | none |
+
+The voice key is named `OPENAI_TTS_API_KEY` on purpose. Netlify's AI Gateway automatically fills a variable called `OPENAI_API_KEY` with its own key, which OpenAI rejects when the app calls OpenAI directly, so the app ignores that name.
 
 Every call must carry the `ACCESS_CODE` you choose. If `ACCESS_CODE` is not set on the server, the functions refuse everything, so a public site cannot spend your credit by accident.
 

@@ -4,12 +4,14 @@ const VOICES = ["alloy", "nova", "onyx", "echo", "shimmer", "fable"];
 
 // POST /api/tts  { text, voice }  ->  audio/mpeg
 // The OpenAI key stays on the server and is never sent to the browser.
+// The variable is deliberately NOT called OPENAI_API_KEY: Netlify's AI Gateway fills that name
+// automatically with its own key, which OpenAI rejects when sent straight to api.openai.com.
 export default async (req: Request) => {
   if (req.method !== "POST") return json({ error: "Use POST." }, 405);
   const denied = guard(req);
   if (denied) return denied;
-  const key = process.env.OPENAI_API_KEY;
-  if (!key) return json({ error: "OPENAI_API_KEY is not set on the server." }, 500);
+  const key = process.env.OPENAI_TTS_API_KEY;
+  if (!key) return json({ error: "OPENAI_TTS_API_KEY is not set on the server." }, 500);
 
   let body: { text?: unknown; voice?: unknown };
   try { body = await req.json(); } catch { return json({ error: "Request body must be JSON." }, 400); }
