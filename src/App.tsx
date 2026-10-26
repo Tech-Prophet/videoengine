@@ -1300,7 +1300,7 @@ DELIVERY: voiceover
   const switchFmt = (f: Fmt) => { setFmt(f); setMinutes(f === "short" ? 1 : 3); setMinSec(f === "short" ? 0 : 120); };
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden" style={{ fontFamily: FONT }}>
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden" style={{ fontFamily: FONT }}>
       <header className="flex flex-wrap items-center gap-2 sm:gap-3 border-b border-slate-800 bg-slate-950 px-3 sm:px-4 py-2.5">
         <div className="text-base sm:text-lg font-extrabold tracking-tight">Vortex <span className="text-violet-400">AI Studio</span></div>
         <div className="ml-2 flex rounded-md bg-slate-900 p-0.5 text-xs sm:text-sm">
@@ -1325,7 +1325,7 @@ DELIVERY: voiceover
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-        <aside className="flex w-full lg:w-[400px] shrink-0 flex-col border-r border-b lg:border-b-0 border-slate-800 bg-slate-950 max-h-[50vh] lg:max-h-none overflow-y-auto">
+        <aside className="flex w-full lg:w-[400px] shrink-0 flex-col border-r border-b lg:border-b-0 border-slate-800 bg-slate-950 max-h-[45dvh] lg:max-h-none overflow-y-auto">
           <nav className="flex border-b border-slate-800 overflow-x-auto">
             {tabs.map(([k, l]) => (
               <button key={k} onClick={() => setTab(k)} className={`flex-1 min-w-[70px] py-2.5 text-xs sm:text-sm whitespace-nowrap ${tab === k ? "border-b-2 border-violet-500 text-white" : "text-slate-400 hover:text-slate-200"}`}>{l}</button>
