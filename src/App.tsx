@@ -1036,7 +1036,7 @@ DELIVERY: voiceover
     catch { setMsg("Couldn't copy automatically. Select the text in the boxes above and copy it by hand."); }
   };
   const copyPrompt = async () => {
-    try { await navigator.clipboard.writeText(aiPrompt); setMsg("Prompt copied. Paste it into Claude or ChatGPT, then paste the reply in Step 2."); }
+    try { await navigator.clipboard.writeText(aiPrompt); setMsg("Prompt copied. Paste it into Claude or ChatGPT, then paste the reply into the “Paste the script here” box."); }
     catch { setMsg("Couldn't copy automatically. Open “Show prompt” and copy it by hand."); }
   };
 
@@ -1051,7 +1051,7 @@ DELIVERY: voiceover
   };
   const loadScript = () => {
     const p = parseScript(scriptText);
-    if (!p.scenes.length) { setMsg("Paste a script first. Use the prompt in Step 1 to get one from Claude or ChatGPT."); return null; }
+    if (!p.scenes.length) { setMsg("Paste a script first. Use the “Get a script” prompt to get one from Claude or ChatGPT."); return null; }
     // Scenes whose narration is unchanged keep the visuals you added yourself (uploads or camera clips).
     const norm = (x: string) => x.replace(/\s+/g, " ").trim().toLowerCase();
     const pool = scenes.filter((s) => s.clips.some(mine));
@@ -1346,7 +1346,7 @@ DELIVERY: voiceover
               <Field l="Video topic or title"><input className={inp} value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="e.g. 5 habits for productivity" /></Field>
 
               <div className="space-y-3 rounded-md border border-slate-800 p-3">
-                <p className="text-sm font-medium">Step 1. Get a script from Claude, ChatGPT or any AI</p>
+                <p className="text-sm font-medium">Get a script from Claude, ChatGPT or any AI</p>
                 <div className="grid grid-cols-2 gap-3">
                   <Field l="Tone"><select className={inp} value={tone} onChange={(e) => setTone(e.target.value)}>{["Friendly", "Professional", "Energetic", "Calm", "Funny"].map((x) => <option key={x}>{x}</option>)}</select></Field>
                   <Field l="Length (minutes)"><input type="number" min={fmt === "short" ? 1 : 2} max={fmt === "short" ? 3 : 15} className={inp} value={minutes} onChange={(e) => setMinutes(Math.max(fmt === "short" ? 1 : 2, +e.target.value))} /></Field>
@@ -1360,7 +1360,7 @@ DELIVERY: voiceover
                 </details>
               </div>
 
-              <Field l="Step 2. Paste the script here">
+              <Field l="Paste the script here">
                 <textarea className={inp} rows={8} value={scriptText} onChange={(e) => setScriptText(e.target.value)} placeholder={"Paste AI script reply here..."} />
               </Field>
               <Field l="Visual source">
