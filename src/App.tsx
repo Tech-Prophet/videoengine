@@ -898,7 +898,7 @@ DELIVERY: voiceover
         setServer({ voice: !!j.voice, voiceProvider: j.voiceProvider ?? "", pexels: !!j.pexels, pixabay: !!j.pixabay });
         setServerMsg("Connected.");
       } catch {
-        if (!ctl.signal.aborted) { setServer(NO_PROVIDERS); setServerMsg("Could not reach the server functions. They only run on Netlify."); }
+        if (!ctl.signal.aborted) { setServer(NO_PROVIDERS); setServerMsg("Could not reach the server. The server functions only run on the hosted site (Netlify or Cloudflare), not in a local preview."); }
       }
     }, 500);
     return () => { ctl.abort(); clearTimeout(id); };
