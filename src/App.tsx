@@ -7,6 +7,7 @@ import type { Move } from "./motion.ts";
 import { drawCaption } from "./captions.ts";
 
 type Fmt = "long" | "short";
+type Fit = "blur" | "fill" | "plain"; // what to do with a picture whose shape does not match the video
 type Tab = "create" | "scenes" | "audio" | "camera" | "publish";
 type Media = HTMLImageElement | HTMLVideoElement;
 type Clip = { url: string; kind: "image" | "video"; src?: "upload" | "ai" | "pexels" | "pixabay" }; // src = where the visual came from (no src = recorded on camera)
@@ -16,7 +17,7 @@ type Mark = { at: number; len: number; text: string }; // one narrated sentence:
 type Scene = Draft & { id: string; duration: number; palette: number; clips: Clip[]; marks?: Mark[] };
 type Meta = { title?: string; description?: string; tags?: string[]; thumb?: string; intro?: string };
 type Parsed = { meta: Meta; scenes: Draft[] };
-type Live = { scenes: Scene[]; starts: number[]; total: number; caps: boolean; W: number; H: number; intro: string; voiceVol: number; musicVol: number };
+type Live = { scenes: Scene[]; starts: number[]; total: number; fit: Fit; caps: boolean; W: number; H: number; intro: string; voiceVol: number; musicVol: number };
 
 const PALETTES = [["#1b1442", "#6d3df0"], ["#0b1f33", "#13a8c9"], ["#0f2a22", "#2fb67c"], ["#3a1212", "#e8643a"], ["#1d1d3a", "#d6458f"]];
 const FONT = "Inter, system-ui, sans-serif";
@@ -41,6 +42,44 @@ const shotCount = (dur: number, vid = false) => (vid ? Math.max(2, Math.min(8, M
 
 // MP4 first: it plays and uploads almost everywhere (WhatsApp, Messenger, Instagram, TikTok, YouTube).
 // WebM is only the fallback for browsers that cannot record MP4.
+const kindOf = (f: File): "image" | "video" | null =>
+  f.type.startsWith("image") ? "image" : f.type.startsWith("video") ? "video"
+    : /\.(jpe?g|png|webp|gif|bmp|avif|heic|heif)$/i.test(f.name) ? "image" // some phones report no file type at all
+    : /\.(mp4|m4v|mov|webm|mkv|3gp|avi)$/i.test(f.name) ? "video" : null;
+// Brings one picked file into the app. Photos are shrunk once to a size the video needs (a 12 MP phone photo is far bigger),
+// and every file is checked to be readable now, so a problem shows up as a message instead of a silently empty scene.
+async function importFile(f: File): Promise<Clip> {
+  const kind = kindOf(f);
+  if (!kind) throw new Error("not a picture or video");
+  if (kind === "image") {
+    let bmp: ImageBitmap;
+    try { bmp = await createImageBitmap(f); } catch { throw new Error("this browser cannot open that photo format"); }
+    const sc = Math.min(1, 2560 / Math.max(bmp.width, bmp.height)), w = Math.max(1, Math.round(bmp.width * sc)), h = Math.max(1, Math.round(bmp.height * sc));
+    const c = document.createElement("canvas");
+    c.width = w; c.height = h;
+    const x = c.getContext("2d");
+    if (!x) { bmp.close(); throw new Error("not enough memory to open it"); }
+    x.fillStyle = "#000"; x.fillRect(0, 0, w, h);
+    x.imageSmoothingQuality = "high"; x.drawImage(bmp, 0, 0, w, h); bmp.close();
+    const blob = await new Promise<Blob | null>((ok) => c.toBlob(ok, "image/jpeg", 0.92));
+    if (!blob) throw new Error("could not prepare the photo");
+    return { url: URL.createObjectURL(blob), kind: "image", src: "upload" };
+  }
+  if (f.size > 300e6) throw new Error("video is over 300 MB, too big for a phone browser. Trim or compress it first");
+  const url = URL.createObjectURL(f);
+  try {
+    await new Promise<void>((ok, bad) => {
+      const v = document.createElement("video");
+      const t = window.setTimeout(() => bad(new Error("the video took too long to open")), 20000);
+      v.preload = "metadata"; v.muted = true;
+      v.onloadedmetadata = () => { clearTimeout(t); ok(); };
+      v.onerror = () => { clearTimeout(t); bad(new Error("this browser cannot play that video")); };
+      v.src = url;
+    });
+  } catch (e) { URL.revokeObjectURL(url); throw e; }
+  return { url, kind: "video", src: "upload" };
+}
+
 const MIME_CANDIDATES = [
   "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
   "video/mp4;codecs=avc1,mp4a.40.2",
@@ -420,7 +459,7 @@ const borrowVisuals = (list: Scene[]): Scene[] =>
 const SAVE_KEY = "vortex-project";
 type Saved = {
   v: 1; fmt: Fmt; res: number; fps: number; wpm: number; topic: string; tone: string; minutes: number; minSec: number;
-  scriptText: string; intro: string; source: Source; moving: boolean; caps: boolean;
+  scriptText: string; intro: string; source: Source; moving: boolean; caps: boolean; fit?: Fit;
   vTitle: string; vDesc: string; vTags: string; thumbText: string;
   scenes: Omit<Scene, "clips" | "marks">[];
 };
@@ -570,27 +609,38 @@ function srcOf(m: Media, long: number): Src | null {
   return { img: fin, w: tw, h: th };
 }
 let blurCv: HTMLCanvasElement | null = null;
+let fitMode: Fit = "blur"; // set once per frame from the project setting
 // Draws a picture or video into the frame. If its shape is close to the frame's, it fills the frame. If not
 // (for example an upright phone photo in a wide video), the whole picture is shown over a blurred, darkened copy of itself.
 function paintMedia(ctx: CanvasRenderingContext2D, w: number, h: number, m: Media, z: number, px: number, py: number) {
   const s = srcOf(m, Math.ceil(Math.max(w, h) * 1.5));
   if (!s) return;
   ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
-  if (fillsFrame(s.w, s.h, w, h)) {
+  const matches = fillsFrame(s.w, s.h, w, h);
+  if (matches || fitMode === "fill") {
     const base = Math.max(w / s.w, h / s.h), dw = s.w * base * z, dh = s.h * base * z;
-    ctx.drawImage(s.img, (w - dw) / 2 + (px * (dw - w)) / 2, (h - dh) / 2 + (py * (dh - h)) / 2, dw, dh);
+    const spareY = dh - h;
+    // A picture that does not match the frame is cropped with its upper part kept, because faces and subjects sit higher up.
+    const y = matches ? (h - dh) / 2 + (py * spareY) / 2 : Math.max(-spareY, Math.min(0, -spareY * 0.3 + (py * spareY) / 2));
+    ctx.drawImage(s.img, (w - dw) / 2 + (px * (dw - w)) / 2, y, dw, dh);
     return;
   }
-  const bw = 48, bh = Math.max(2, Math.round((48 * h) / w));
-  blurCv ??= document.createElement("canvas");
-  if (blurCv.width !== bw || blurCv.height !== bh) { blurCv.width = bw; blurCv.height = bh; }
-  const bx = blurCv.getContext("2d");
-  if (bx) {
-    bx.imageSmoothingQuality = "high";
-    const k = Math.max(bw / s.w, bh / s.h), cw = bw / k, ch = bh / k;
-    bx.drawImage(s.img, (s.w - cw) / 2, (s.h - ch) / 2, cw, ch, 0, 0, bw, bh);
-    ctx.drawImage(blurCv, -w * 0.04, -h * 0.04, w * 1.08, h * 1.08);
-    ctx.fillStyle = "rgba(0,0,0,0.3)"; ctx.fillRect(0, 0, w, h);
+  if (fitMode === "plain") {
+    const g = ctx.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, "#14151f"); g.addColorStop(1, "#07080d");
+    ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+  } else {
+    const bw = 96, bh = Math.max(2, Math.round((96 * h) / w));
+    blurCv ??= document.createElement("canvas");
+    if (blurCv.width !== bw || blurCv.height !== bh) { blurCv.width = bw; blurCv.height = bh; }
+    const bx = blurCv.getContext("2d");
+    if (bx) {
+      bx.imageSmoothingQuality = "high";
+      const k = Math.max(bw / s.w, bh / s.h), cw = bw / k, ch = bh / k;
+      bx.drawImage(s.img, (s.w - cw) / 2, (s.h - ch) / 2, cw, ch, 0, 0, bw, bh);
+      ctx.drawImage(blurCv, 0, 0, w, h);
+      ctx.fillStyle = "rgba(0,0,0,0.45)"; ctx.fillRect(0, 0, w, h);
+    }
   }
   const base = Math.min(w / s.w, h / s.h), zz = 1 + (z - 1) * 0.4, dw = s.w * base * zz, dh = s.h * base * zz;
   ctx.drawImage(s.img, (w - dw) / 2, (h - dh) / 2, dw, dh);
@@ -623,6 +673,7 @@ function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, sc: Scen
 }
 function drawFrame(ctx: CanvasRenderingContext2D, L: Live, i: number, tt: number, getMedia: (url: string) => Media | undefined) {
   const { W: w, H: h } = L;
+  fitMode = L.fit;
   const sc = L.scenes[i];
   if (!sc) { ctx.fillStyle = "#05060d"; ctx.fillRect(0, 0, w, h); return; }
   const u = Math.min(w, h) / 1080;
@@ -699,6 +750,8 @@ export default function App() {
   const [playing, setPlaying] = useState(false);
   const [t, setT] = useState(0);
   const [caps, setCaps] = useState(saved?.caps ?? true);
+  const [fit, setFit] = useState<Fit>(saved?.fit ?? "blur");
+  const [adding, setAdding] = useState(false);
   const [safe, setSafe] = useState(true);
   const [busy, setBusy] = useState(false);
   const [stage, setStage] = useState(0);
@@ -758,8 +811,8 @@ export default function App() {
   const sel = scenes.find((s) => s.id === selId) ?? scenes[0];
   const starts = useMemo(() => scenes.reduce<number[]>((a, _s, i) => [...a, i ? a[i - 1] + scenes[i - 1].duration : 0], []), [scenes]);
   const total = scenes.reduce((a, s) => a + s.duration, 0);
-  const live = useRef<Live>({ scenes, starts, total, caps, W, H, intro, voiceVol, musicVol });
-  live.current = { scenes, starts, total, caps, W, H, intro, voiceVol, musicVol };
+  const live = useRef<Live>({ scenes, starts, total, fit, caps, W, H, intro, voiceVol, musicVol });
+  live.current = { scenes, starts, total, fit, caps, W, H, intro, voiceVol, musicVol };
 
   const totalWords = Math.round(minutes * wpm);
   const nScenes = fmt === "short" ? 4 : Math.max(6, Math.min(16, Math.round(minutes * 2)));
@@ -826,14 +879,14 @@ DELIVERY: voiceover
     const id = window.setTimeout(() => {
       try {
         const data: Saved = {
-          v: 1, fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, vTitle, vDesc, vTags, thumbText,
+          v: 1, fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, vTitle, vDesc, vTags, thumbText,
           scenes: scenes.map((s) => ({ id: s.id, title: s.title, text: s.text, onScreen: s.onScreen, visual: s.visual, duration: s.duration, palette: s.palette })),
         };
         localStorage.setItem(SAVE_KEY, JSON.stringify(data));
       } catch { /* storage full or blocked: skip */ }
     }, 800);
     return () => clearTimeout(id);
-  }, [fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, vTitle, vDesc, vTags, thumbText, scenes]);
+  }, [fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, vTitle, vDesc, vTags, thumbText, scenes]);
   useEffect(() => {
     if (!code) { setServer(NO_PROVIDERS); setServerMsg(""); return undefined; }
     const ctl = new AbortController();
@@ -1010,14 +1063,19 @@ DELIVERY: voiceover
     return list.map((s) => ({ ...s, duration: Math.max(1, (dur * words(s.text).length) / tw), marks: undefined }));
   };
   const fitVoice = () => { setScenes(fitTo(scenes, voiceDur)); setMsg("Scene lengths now match your voiceover."); };
-  const attach = (fl: FileList | null) => {
-    const a = Array.from(fl ?? []);
-    if (!a.length || !sel) return;
-    const use = a.filter((f) => f.type.startsWith("video") || f.type.startsWith("image"));
-    if (!use.length) { setMsg("Those files are not pictures or videos."); return; }
-    const added: Clip[] = use.map((f) => ({ url: URL.createObjectURL(f), kind: f.type.startsWith("video") ? ("video" as const) : ("image" as const), src: "upload" as const }));
-    patch({ clips: [...sel.clips, ...added] });
-    setMsg(`${added.length} file${added.length === 1 ? "" : "s"} added to this scene.`);
+  const attach = async (files: File[]) => {
+    if (!files.length || !sel) return;
+    const id = sel.id;
+    setAdding(true);
+    const added: Clip[] = [], failed: string[] = [];
+    for (let i = 0; i < files.length; i++) {
+      setMsg(`Adding ${i + 1} of ${files.length}: ${files[i].name}…`);
+      try { added.push(await importFile(files[i])); }
+      catch (e) { failed.push(`${files[i].name} (${e instanceof Error ? e.message : "could not be read"})`); }
+    }
+    if (added.length) setScenes((ss) => ss.map((x) => (x.id === id ? { ...x, clips: [...x.clips, ...added] } : x)));
+    setAdding(false);
+    setMsg(`${added.length ? `${added.length} file${added.length === 1 ? "" : "s"} added to this scene. ` : ""}${failed.length ? `Could not add: ${failed.join("; ")}.` : ""}`.trim());
   };
   const dropClip = (k: number) => { if (sel) patch({ clips: sel.clips.filter((_, i) => i !== k) }); };
   const moveClip = (k: number, d: number) => {
@@ -1438,6 +1496,14 @@ DELIVERY: voiceover
                 <input type="checkbox" className="mt-0.5" checked={moving} onChange={(e) => setMoving(e.target.checked)} />
                 <span><b className="text-slate-200">Use moving video footage.</b> Finds multiple video clips per scene. Rich visual assets automatically fill in to pack every scene with high visual variety.</span>
               </label>
+              <Field l="Pictures that do not match the video shape">
+                <select className={inp} value={fit} onChange={(e) => setFit(e.target.value as Fit)}>
+                  <option value="blur">Whole picture over a blurred background</option>
+                  <option value="fill">Fill the frame (crops the edges)</option>
+                  <option value="plain">Whole picture on a plain dark background</option>
+                </select>
+              </Field>
+              <p className="text-xs text-slate-500">This affects things like upright phone photos in a wide video. Pictures close to the video's shape always fill the frame. For upright photos, the vertical (Shorts) format fills the screen with no bars.</p>
               <button className={`${btn(true)} w-full !py-2.5`} disabled={busy || exporting} onClick={generateVideo}>{busy || exporting ? "Working…" : "Generate video"}</button>
               <button className={`${btn()} w-full`} disabled={busy || exporting} onClick={loadOnly}>Load script into scenes only</button>
               <button className={`${btn()} w-full`} disabled={busy || exporting} onClick={() => { if (window.confirm("Clear the saved project and start fresh?")) { try { localStorage.removeItem(SAVE_KEY); } catch { /* ignore */ } window.location.reload(); } }}>Start a new project</button>
@@ -1498,7 +1564,7 @@ DELIVERY: voiceover
                     </div>
                   ))}
                 </div>
-                <Field l="Add your own images and videos (select several; they are added to the list)"><input type="file" multiple accept="image/*,video/*" className="text-xs" onChange={(e) => { attach(e.target.files); e.target.value = ""; }} /></Field>
+                <Field l="Add your own images and videos (select several; they are added to the list)"><input type="file" multiple accept="image/*,video/*" disabled={adding} className="text-xs" onChange={(e) => { const picked = Array.from(e.target.files ?? []); e.target.value = ""; void attach(picked); }} /></Field>
               </div>)}
             </>)}
 
