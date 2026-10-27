@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { makeMusic, MUSIC_STYLES } from "./music.ts";
 import type { MusicStyle } from "./music.ts";
+import { XFD, fillsFrame, moveFor, motionP, pose } from "./motion.ts";
+import type { Move } from "./motion.ts";
 
 type Fmt = "long" | "short";
 type Tab = "create" | "scenes" | "audio" | "camera" | "publish";
@@ -18,7 +20,7 @@ type Live = { scenes: Scene[]; starts: number[]; total: number; caps: boolean; W
 const PALETTES = [["#1b1442", "#6d3df0"], ["#0b1f33", "#13a8c9"], ["#0f2a22", "#2fb67c"], ["#3a1212", "#e8643a"], ["#1d1d3a", "#d6458f"]];
 const FONT = "Inter, system-ui, sans-serif";
 const NO_PROVIDERS = { pixabay: false, pexels: false, voice: false, voiceProvider: "" };
-const SHOT_SECONDS = 3; // Pictures rotate faster for more visuals per scene
+const SHOT_SECONDS = 4; // A picture stays about 4 seconds: long enough to read, short enough to keep moving
 const uid = () => Math.random().toString(36).slice(2, 9);
 const words = (s: string) => s.trim().split(/\s+/).filter(Boolean);
 const clock = (s: number) => {
@@ -528,33 +530,67 @@ function drawBg(ctx: CanvasRenderingContext2D, w: number, h: number, sc: Scene, 
 }
 const mediaReady = (m: Media | undefined) => !!m && (m instanceof HTMLVideoElement ? m.readyState >= 2 && m.videoWidth > 0 : m.complete && m.naturalWidth > 0);
 const mediaSettled = (m: Media | undefined) => !m || (m instanceof HTMLVideoElement ? m.readyState >= 2 || !!m.error : m.complete);
-type Move = [number, number, number, number, number, number];
-const MOVES: Move[] = [
-  [1.04, 1.22, 0, 0, 0, 0],
-  [1.22, 1.04, 0, 0, 0, 0],
-  [1.18, 1.18, 1, -1, 0, 0],
-  [1.18, 1.18, -1, 1, 0, 0],
-  [1.18, 1.18, 0, 0, -1, 1],
-  [1.18, 1.18, 0, 0, 1, -1],
-  [1.06, 1.22, 0.7, -0.7, -0.5, 0.5],
-  [1.22, 1.06, -0.7, 0.7, 0.5, -0.5],
-];
-const SEQ = [0, 2, 1, 3, 6, 4, 7, 5];
-const OPEN: Move = [1, 1.25, 0, 0, 0, 0];
-const CLOSE: Move = [1.25, 1, 0, 0, 0, 0];
-const STILL: Move = [1, 1, 0, 0, 0, 0];
-const moveFor = (si: number, k: number, open: boolean, close: boolean): Move => (open ? OPEN : close ? CLOSE : MOVES[SEQ[(si * 3 + k) % SEQ.length]]);
-const ease = (p: number) => { const q = Math.max(0, Math.min(1, p)); return 0.5 * q + 0.5 * q * q * (3 - 2 * q); };
-function drawMedia(ctx: CanvasRenderingContext2D, w: number, h: number, m: Media, p: number, mv: Move | null) {
-  const mw = m instanceof HTMLVideoElement ? m.videoWidth : m.naturalWidth;
-  const mh = m instanceof HTMLVideoElement ? m.videoHeight : m.naturalHeight;
-  if (!mw || !mh) return;
-  const base = Math.max(w / mw, h / mh), e = ease(p), c = mv ?? STILL;
-  const g = m instanceof HTMLVideoElement ? 0.6 : 1;
-  const z = 1 + (c[0] + (c[1] - c[0]) * e - 1) * g;
-  const dw = mw * base * z, dh = mh * base * z;
-  const px = (c[2] + (c[3] - c[2]) * e) * g, py = (c[4] + (c[5] - c[4]) * e) * g;
-  ctx.drawImage(m, (w - dw) / 2 + (px * (dw - w)) / 2, (h - dh) / 2 + (py * (dh - h)) / 2, dw, dh);
+// Pictures are shrunk once (in steps, with high quality) to about 1.5 times the video size. Drawing a huge phone photo
+// straight onto a small frame while it moves makes it shimmer.
+type Src = { img: CanvasImageSource; w: number; h: number };
+const shrunk = new WeakMap<HTMLImageElement, { long: number; c: HTMLCanvasElement }>();
+function srcOf(m: Media, long: number): Src | null {
+  if (m instanceof HTMLVideoElement) return m.videoWidth && m.videoHeight ? { img: m, w: m.videoWidth, h: m.videoHeight } : null;
+  const nw = m.naturalWidth, nh = m.naturalHeight;
+  if (!nw || !nh) return null;
+  if (Math.max(nw, nh) <= long * 1.25) return { img: m, w: nw, h: nh };
+  const hit = shrunk.get(m);
+  if (hit && hit.long === long) return { img: hit.c, w: hit.c.width, h: hit.c.height };
+  const sc = long / Math.max(nw, nh), tw = Math.max(1, Math.round(nw * sc)), th = Math.max(1, Math.round(nh * sc));
+  let cur: CanvasImageSource = m, cw = nw, ch = nh;
+  const step = (w2: number, h2: number) => {
+    const c = document.createElement("canvas");
+    c.width = w2; c.height = h2;
+    const x = c.getContext("2d");
+    if (!x) return null;
+    x.imageSmoothingQuality = "high";
+    x.drawImage(cur, 0, 0, w2, h2);
+    return c;
+  };
+  while (cw / 2 >= tw) {
+    const c = step(Math.round(cw / 2), Math.max(1, Math.round(ch / 2)));
+    if (!c) return { img: m, w: nw, h: nh };
+    cur = c; cw = c.width; ch = c.height;
+  }
+  const fin = step(tw, th);
+  if (!fin) return { img: m, w: nw, h: nh };
+  shrunk.set(m, { long, c: fin });
+  return { img: fin, w: tw, h: th };
+}
+let blurCv: HTMLCanvasElement | null = null;
+// Draws a picture or video into the frame. If its shape is close to the frame's, it fills the frame. If not
+// (for example an upright phone photo in a wide video), the whole picture is shown over a blurred, darkened copy of itself.
+function paintMedia(ctx: CanvasRenderingContext2D, w: number, h: number, m: Media, z: number, px: number, py: number) {
+  const s = srcOf(m, Math.ceil(Math.max(w, h) * 1.5));
+  if (!s) return;
+  ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
+  if (fillsFrame(s.w, s.h, w, h)) {
+    const base = Math.max(w / s.w, h / s.h), dw = s.w * base * z, dh = s.h * base * z;
+    ctx.drawImage(s.img, (w - dw) / 2 + (px * (dw - w)) / 2, (h - dh) / 2 + (py * (dh - h)) / 2, dw, dh);
+    return;
+  }
+  const bw = 48, bh = Math.max(2, Math.round((48 * h) / w));
+  blurCv ??= document.createElement("canvas");
+  if (blurCv.width !== bw || blurCv.height !== bh) { blurCv.width = bw; blurCv.height = bh; }
+  const bx = blurCv.getContext("2d");
+  if (bx) {
+    bx.imageSmoothingQuality = "high";
+    const k = Math.max(bw / s.w, bh / s.h), cw = bw / k, ch = bh / k;
+    bx.drawImage(s.img, (s.w - cw) / 2, (s.h - ch) / 2, cw, ch, 0, 0, bw, bh);
+    ctx.drawImage(blurCv, -w * 0.04, -h * 0.04, w * 1.08, h * 1.08);
+    ctx.fillStyle = "rgba(0,0,0,0.3)"; ctx.fillRect(0, 0, w, h);
+  }
+  const base = Math.min(w / s.w, h / s.h), zz = 1 + (z - 1) * 0.4, dw = s.w * base * zz, dh = s.h * base * zz;
+  ctx.drawImage(s.img, (w - dw) / 2, (h - dh) / 2, dw, dh);
+}
+function drawMedia(ctx: CanvasRenderingContext2D, w: number, h: number, m: Media, p: number, mv: Move | null, len: number) {
+  const c = pose(mv, p, len, m instanceof HTMLVideoElement);
+  paintMedia(ctx, w, h, m, c.z, c.px, c.py);
 }
 function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, sc: Scene, local: number, time: number, getMedia: (url: string) => Media | undefined, si: number, count: number) {
   drawBg(ctx, w, h, sc, time);
@@ -564,11 +600,17 @@ function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, sc: Scen
   const mvOf = (k: number) => (sc.onCam ? null : moveFor(si, k, si === 0 && k === 0, si === count - 1 && k === sh.n - 1));
   let m = getMedia(shots[sh.k].url);
   if (!mediaReady(m)) m = shots.map((x) => getMedia(x.url)).find(mediaReady);
-  if (m) drawMedia(ctx, w, h, m, Math.min(1, sh.sl / sh.len), mvOf(sh.k));
-  const xf = Math.min(0.5, sh.len * 0.3);
+  if (m) drawMedia(ctx, w, h, m, motionP(sh.k, sh.sl, sh.len), mvOf(sh.k), sh.len);
+  const xf = Math.min(XFD, sh.len * 0.3);
   if (sh.k < sh.n - 1 && sh.sl > sh.len - xf) {
     const nm = getMedia(shots[sh.k + 1].url);
-    if (mediaReady(nm) && nm) { ctx.globalAlpha = (sh.sl - (sh.len - xf)) / xf; drawMedia(ctx, w, h, nm, 0, mvOf(sh.k + 1)); ctx.globalAlpha = 1; }
+    if (mediaReady(nm) && nm) {
+      // The next shot is already moving while it fades in, so nothing freezes during the dissolve.
+      const st = shotStarts(sc), nlen = (sh.k + 1 < sh.n - 1 ? st[sh.k + 2] : sc.duration) - st[sh.k + 1];
+      ctx.globalAlpha = (sh.sl - (sh.len - xf)) / xf;
+      drawMedia(ctx, w, h, nm, motionP(sh.k + 1, Math.min(0, sh.sl - sh.len), nlen), mvOf(sh.k + 1), nlen);
+      ctx.globalAlpha = 1;
+    }
   }
   if (m && !sc.onCam) { ctx.fillStyle = "rgba(0,0,0,0.3)"; ctx.fillRect(0, 0, w, h); }
 }
@@ -578,10 +620,10 @@ function drawFrame(ctx: CanvasRenderingContext2D, L: Live, i: number, tt: number
   if (!sc) { ctx.fillStyle = "#05060d"; ctx.fillRect(0, 0, w, h); return; }
   const u = Math.min(w, h) / 1080;
   const local = tt - L.starts[i];
-  const XF = 0.5;
+  const XF = XFD;
   if (i > 0 && local < XF) {
     const pv = L.scenes[i - 1];
-    drawScene(ctx, w, h, pv, pv.duration, tt, getMedia, i - 1, L.scenes.length);
+    drawScene(ctx, w, h, pv, pv.duration + local, tt, getMedia, i - 1, L.scenes.length); // the old scene keeps moving while it fades out
     ctx.globalAlpha = Math.max(0, local / XF);
     drawScene(ctx, w, h, sc, local, tt, getMedia, i, L.scenes.length);
     ctx.globalAlpha = 1;
@@ -932,8 +974,8 @@ DELIVERY: voiceover
     else if (bg instanceof HTMLCanvasElement) { bw = bg.width; bh = bg.height; }
     else if (url) ready = false;
     if (bg && bw && bh && ready) {
-      const k = Math.max(1280 / bw, 720 / bh);
-      ctx.drawImage(bg, (1280 - bw * k) / 2, (720 - bh * k) / 2, bw * k, bh * k);
+      if (bg instanceof HTMLVideoElement || bg instanceof HTMLImageElement) paintMedia(ctx, 1280, 720, bg, 1, 0, 0);
+      else { const k = Math.max(1280 / bw, 720 / bh); ctx.drawImage(bg, (1280 - bw * k) / 2, (720 - bh * k) / 2, bw * k, bh * k); }
     }
     const sh = ctx.createLinearGradient(0, 0, 1280, 0);
     sh.addColorStop(0, "rgba(0,0,0,.7)"); sh.addColorStop(0.65, "rgba(0,0,0,.25)"); sh.addColorStop(1, "rgba(0,0,0,0)");
