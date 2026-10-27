@@ -5,6 +5,7 @@ import type { MusicStyle } from "./music.ts";
 import { XFD, fillsFrame, moveFor, motionP, pose } from "./motion.ts";
 import type { Move } from "./motion.ts";
 import { drawCaption } from "./captions.ts";
+import { duckFactor, levels, rmsActive, rmsAll } from "./mix.ts";
 
 type Fmt = "long" | "short";
 type Fit = "blur" | "fill" | "plain"; // what to do with a picture whose shape does not match the video
@@ -17,7 +18,7 @@ type Mark = { at: number; len: number; text: string }; // one narrated sentence:
 type Scene = Draft & { id: string; duration: number; palette: number; clips: Clip[]; marks?: Mark[] };
 type Meta = { title?: string; description?: string; tags?: string[]; thumb?: string; intro?: string };
 type Parsed = { meta: Meta; scenes: Draft[] };
-type Live = { scenes: Scene[]; starts: number[]; total: number; fit: Fit; caps: boolean; W: number; H: number; intro: string; voiceVol: number; musicVol: number };
+type Live = { scenes: Scene[]; starts: number[]; total: number; fit: Fit; caps: boolean; W: number; H: number; intro: string; voiceVol: number; musicVol: number; duck: boolean };
 
 const PALETTES = [["#1b1442", "#6d3df0"], ["#0b1f33", "#13a8c9"], ["#0f2a22", "#2fb67c"], ["#3a1212", "#e8643a"], ["#1d1d3a", "#d6458f"]];
 const FONT = "Inter, system-ui, sans-serif";
@@ -52,18 +53,28 @@ async function importFile(f: File): Promise<Clip> {
   const kind = kindOf(f);
   if (!kind) throw new Error("not a picture or video");
   if (kind === "image") {
-    let bmp: ImageBitmap;
-    try { bmp = await createImageBitmap(f); } catch { throw new Error("this browser cannot open that photo format"); }
-    const sc = Math.min(1, 2560 / Math.max(bmp.width, bmp.height)), w = Math.max(1, Math.round(bmp.width * sc)), h = Math.max(1, Math.round(bmp.height * sc));
-    const c = document.createElement("canvas");
-    c.width = w; c.height = h;
-    const x = c.getContext("2d");
-    if (!x) { bmp.close(); throw new Error("not enough memory to open it"); }
-    x.fillStyle = "#000"; x.fillRect(0, 0, w, h);
-    x.imageSmoothingQuality = "high"; x.drawImage(bmp, 0, 0, w, h); bmp.close();
-    const blob = await new Promise<Blob | null>((ok) => c.toBlob(ok, "image/jpeg", 0.92));
-    if (!blob) throw new Error("could not prepare the photo");
-    return { url: URL.createObjectURL(blob), kind: "image", src: "upload" };
+    const url = URL.createObjectURL(f);
+    try {
+      // Read only the size first (no full decode), then let the browser decode straight to the size the video needs.
+      const im = new Image();
+      await new Promise<void>((ok, bad) => { im.onload = () => ok(); im.onerror = () => bad(new Error("this browser cannot open that photo format")); im.src = url; });
+      const nw = im.naturalWidth, nh = im.naturalHeight;
+      if (!nw || !nh) throw new Error("the photo has no readable size");
+      const sc = Math.min(1, 1920 / Math.max(nw, nh));
+      if (sc === 1) return { url, kind: "image", src: "upload" }; // already small: use it as it is
+      const w = Math.max(1, Math.round(nw * sc)), h = Math.max(1, Math.round(nh * sc));
+      let bmp: ImageBitmap;
+      try { bmp = await createImageBitmap(im, { resizeWidth: w, resizeHeight: h, resizeQuality: "medium" }); } catch { throw new Error("not enough memory to open that photo"); }
+      const c = document.createElement("canvas");
+      c.width = w; c.height = h;
+      const x = c.getContext("2d");
+      if (!x) { bmp.close(); throw new Error("not enough memory to open that photo"); }
+      x.drawImage(bmp, 0, 0); bmp.close();
+      const blob = await new Promise<Blob | null>((ok) => c.toBlob(ok, "image/jpeg", 0.9));
+      if (!blob) throw new Error("could not prepare the photo");
+      URL.revokeObjectURL(url);
+      return { url: URL.createObjectURL(blob), kind: "image", src: "upload" };
+    } catch (e) { URL.revokeObjectURL(url); throw e; }
   }
   if (f.size > 300e6) throw new Error("video is over 300 MB, too big for a phone browser. Trim or compress it first");
   const url = URL.createObjectURL(f);
@@ -459,7 +470,7 @@ const borrowVisuals = (list: Scene[]): Scene[] =>
 const SAVE_KEY = "vortex-project";
 type Saved = {
   v: 1; fmt: Fmt; res: number; fps: number; wpm: number; topic: string; tone: string; minutes: number; minSec: number;
-  scriptText: string; intro: string; source: Source; moving: boolean; caps: boolean; fit?: Fit;
+  scriptText: string; intro: string; source: Source; moving: boolean; caps: boolean; fit?: Fit; musicStyle?: MusicStyle; autoMusic?: boolean; balance?: boolean;
   vTitle: string; vDesc: string; vTags: string; thumbText: string;
   scenes: Omit<Scene, "clips" | "marks">[];
 };
@@ -727,7 +738,7 @@ const btn = (p = false) => `rounded-md px-3 py-1.5 text-sm font-medium disabled:
 const Field = ({ l, children }: { l: string; children: ReactNode }) => (
   <label className="block"><span className="mb-1 block text-xs text-slate-400">{l}</span>{children}</label>
 );
-const STEPS = ["Read script", "Record narration", "Find visuals", "Render video"];
+const STEPS = ["Read script", "Voiceover and music", "Find visuals", "Render video"];
 
 export default function App() {
   const [saved] = useState(loadSaved);
@@ -771,7 +782,11 @@ export default function App() {
   const [cfVoice, setCfVoice] = useState("orion");
   const [musicUrl, setMusicUrl] = useState("");
   const [musicVol, setMusicVol] = useState(0.15);
-  const [musicStyle, setMusicStyle] = useState<MusicStyle>("calm");
+  const [musicStyle, setMusicStyle] = useState<MusicStyle>(saved?.musicStyle ?? "calm");
+  const [autoMusic, setAutoMusic] = useState(saved?.autoMusic ?? true); // Generate video adds a music track by itself
+  const [balance, setBalance] = useState(saved?.balance ?? true); // level the voice and keep the music under it
+  const [voiceRms, setVoiceRms] = useState<number | null>(null); // measured loudness of the voiceover and the music
+  const [musicRms, setMusicRms] = useState<number | null>(null);
   const [makingMusic, setMakingMusic] = useState(false);
   const [voiceUrl, setVoiceUrl] = useState("");
   const [voiceVol, setVoiceVol] = useState(1);
@@ -808,12 +823,19 @@ export default function App() {
   const clipGain = useRef<GainNode | null>(null);
   const clipNodes = useRef<Map<HTMLVideoElement, MediaElementAudioSourceNode>>(new Map());
 
-  const [W, H] = dims(fmt, res);
+  const [W, H] = dims(fmt, res); // the size of the finished video
+  // While editing, the preview is drawn smaller (a phone cannot redraw 1080p many times a second); the full size is used only while rendering.
+  const previewLong = typeof window !== "undefined" && window.innerWidth >= 1024 ? 1280 : 854;
+  const ps = exporting ? 1 : Math.min(1, previewLong / Math.max(W, H));
+  const cw = Math.max(2, Math.round((W * ps) / 2) * 2), ch = Math.max(2, Math.round((H * ps) / 2) * 2);
+  const lv = levels(voiceRms, musicRms);
+  const voiceGain = balance ? voiceVol * lv.voice : voiceVol;
+  const musicGain = balance ? lv.music : musicVol;
   const sel = scenes.find((s) => s.id === selId) ?? scenes[0];
   const starts = useMemo(() => scenes.reduce<number[]>((a, _s, i) => [...a, i ? a[i - 1] + scenes[i - 1].duration : 0], []), [scenes]);
   const total = scenes.reduce((a, s) => a + s.duration, 0);
-  const live = useRef<Live>({ scenes, starts, total, fit, caps, W, H, intro, voiceVol, musicVol });
-  live.current = { scenes, starts, total, fit, caps, W, H, intro, voiceVol, musicVol };
+  const live = useRef<Live>({ scenes, starts, total, fit, caps, W: cw, H: ch, intro, voiceVol: voiceGain, musicVol: musicGain, duck: balance });
+  live.current = { scenes, starts, total, fit, caps, W: cw, H: ch, intro, voiceVol: voiceGain, musicVol: musicGain, duck: balance };
 
   const totalWords = Math.round(minutes * wpm);
   const nScenes = fmt === "short" ? 4 : Math.max(6, Math.min(16, Math.round(minutes * 2)));
@@ -843,6 +865,14 @@ DELIVERY: voiceover
 (continue until Scene ${nScenes}. Use "DELIVERY: on-camera" only for a scene where a real person must speak straight to the viewer. Otherwise always use "DELIVERY: voiceover".)`;
 
   const ensureAc = () => { if (!acRef.current) acRef.current = new AudioContext(); return acRef.current; };
+  // Loudness of an audio file (speech: only the speaking parts count), used to balance the voice and the music.
+  const measure = async (url: string, speech: boolean) => {
+    try {
+      const a = await ensureAc().decodeAudioData(await (await fetch(url)).arrayBuffer());
+      const d = a.getChannelData(0);
+      return speech ? rmsActive(d) : rmsAll(d);
+    } catch { return null; }
+  };
   const track = (k: "music" | "voice") => {
     const ac = ensureAc();
     if (!tracks.current[k]) {
@@ -880,14 +910,14 @@ DELIVERY: voiceover
     const id = window.setTimeout(() => {
       try {
         const data: Saved = {
-          v: 1, fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, vTitle, vDesc, vTags, thumbText,
+          v: 1, fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, vTitle, vDesc, vTags, thumbText,
           scenes: scenes.map((s) => ({ id: s.id, title: s.title, text: s.text, onScreen: s.onScreen, visual: s.visual, duration: s.duration, palette: s.palette })),
         };
         localStorage.setItem(SAVE_KEY, JSON.stringify(data));
       } catch { /* storage full or blocked: skip */ }
     }, 800);
     return () => clearTimeout(id);
-  }, [fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, vTitle, vDesc, vTags, thumbText, scenes]);
+  }, [fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, vTitle, vDesc, vTags, thumbText, scenes]);
   useEffect(() => {
     if (!code) { setServer(NO_PROVIDERS); setServerMsg(""); return undefined; }
     const ctl = new AbortController();
@@ -926,7 +956,7 @@ DELIVERY: voiceover
   }, [scenes]);
 
   useEffect(() => {
-    let last = performance.now(), lastUi = 0;
+    let last = performance.now(), lastUi = 0, lastL: Live | null = null, lastT = -1, lastDraw = 0;
     const getMedia = (u: string) => mediaRef.current[u];
     const tick = () => {
       const now = performance.now();
@@ -941,8 +971,12 @@ DELIVERY: voiceover
           else tRef.current += dt;
         }
         if (tRef.current >= L.total) { tRef.current = L.total; setT(L.total); pause(); onEnd.current?.(); }
-        else if (now - lastUi > 100) { lastUi = now; setT(tRef.current); }
+        else if (now - lastUi > 200) { lastUi = now; setT(tRef.current); }
       }
+      // Nothing is playing and nothing changed: do not redraw the picture 60 times a second (this is what made taps lag).
+      // A slow redraw every 0.4 s still catches pictures that finish loading.
+      if (!playingRef.current && exportStart.current === null && L === lastL && tRef.current === lastT && now - lastDraw < 400) return;
+      lastL = L; lastT = tRef.current;
       const tt = Math.min(tRef.current, Math.max(0, L.total - 0.001));
       let i = 0;
       L.starts.forEach((s, k) => { if (tt >= s) i = k; });
@@ -972,12 +1006,15 @@ DELIVERY: voiceover
       const ac = acRef.current;
       if (ac) {
         const vt = tracks.current.voice, mt = tracks.current.music;
-        const vTarget = sc?.onCam ? 0 : L.voiceVol, mTarget = L.musicVol * (sc?.onCam ? 0.25 : 1);
+        // Music ducks under speech: down quickly when a sentence starts, back up slowly afterwards.
+        const duck = L.duck ? duckFactor(!!(vt && vt.el.src), sc?.marks, local) : 1;
+        const vTarget = sc?.onCam ? 0 : L.voiceVol, mTarget = L.musicVol * (sc?.onCam ? 0.25 : 1) * duck;
         if (vt && Math.abs(vt.gain.gain.value - vTarget) > 0.001) vt.gain.gain.setTargetAtTime(vTarget, ac.currentTime, 0.03);
-        if (mt && Math.abs(mt.gain.gain.value - mTarget) > 0.001) mt.gain.gain.setTargetAtTime(mTarget, ac.currentTime, 0.03);
+        if (mt && Math.abs(mt.gain.gain.value - mTarget) > 0.001) mt.gain.gain.setTargetAtTime(mTarget, ac.currentTime, mTarget < mt.gain.gain.value ? 0.08 : 0.5);
       }
       const ctx = canvasRef.current?.getContext("2d");
-      if (ctx) drawFrame(ctx, L, i, tt, getMedia);
+      // While previewing, 30 pictures a second is plenty. Rendering draws every tick.
+      if (ctx && !(exportStart.current === null && playingRef.current && now - lastDraw < 30)) { lastDraw = now; drawFrame(ctx, L, i, tt, getMedia); }
     };
     let worker: Worker | null = null, timer = 0;
     try {
@@ -992,12 +1029,15 @@ DELIVERY: voiceover
     if (!musicUrl) {
       const old = tracks.current.music; // music was removed: stop it and empty the player
       if (old) { old.el.pause(); old.el.removeAttribute("src"); }
+      setMusicRms(null);
       return;
     }
+    void measure(musicUrl, false).then(setMusicRms);
     const T = track("music"); T.el.src = musicUrl; T.el.loop = true;
   }, [musicUrl]);
   useEffect(() => {
-    if (!voiceUrl) return;
+    if (!voiceUrl) { setVoiceRms(null); return; }
+    void measure(voiceUrl, true).then(setVoiceRms);
     const el = track("voice").el;
     el.src = voiceUrl;
     el.onloadedmetadata = () => {
@@ -1068,12 +1108,21 @@ DELIVERY: voiceover
     if (!files.length || !sel) return;
     const id = sel.id;
     setAdding(true);
-    const added: Clip[] = [], failed: string[] = [];
-    for (let i = 0; i < files.length; i++) {
-      setMsg(`Adding ${i + 1} of ${files.length}: ${files[i].name}…`);
-      try { added.push(await importFile(files[i])); }
-      catch (e) { failed.push(`${files[i].name} (${e instanceof Error ? e.message : "could not be read"})`); }
-    }
+    const got: (Clip | undefined)[] = [], failed: string[] = [];
+    let nextFile = 0, finished = 0;
+    // Two files at a time: faster than one by one, and still gentle on phone memory.
+    const worker = async () => {
+      while (nextFile < files.length) {
+        const i = nextFile++;
+        try { got[i] = await importFile(files[i]); }
+        catch (e) { failed.push(`${files[i].name} (${e instanceof Error ? e.message : "could not be read"})`); }
+        finished++;
+        setMsg(`Adding files: ${finished} of ${files.length} done…`);
+      }
+    };
+    setMsg(`Adding ${files.length} file${files.length === 1 ? "" : "s"}…`);
+    await Promise.all([worker(), worker()]);
+    const added = got.filter((c): c is Clip => !!c);
     if (added.length) setScenes((ss) => ss.map((x) => (x.id === id ? { ...x, clips: [...x.clips, ...added] } : x)));
     setAdding(false);
     setMsg(`${added.length ? `${added.length} file${added.length === 1 ? "" : "s"} added to this scene. ` : ""}${failed.length ? `Could not add: ${failed.join("; ")}.` : ""}`.trim());
@@ -1107,7 +1156,7 @@ DELIVERY: voiceover
   };
 
   const grabFrame = () => {
-    const L = { ...live.current, caps: false, intro: "" };
+    const L = { ...live.current, W, H, caps: false, intro: "" }; // thumbnails use the full size, not the small preview
     const c = document.createElement("canvas");
     c.width = L.W; c.height = L.H;
     const ctx = c.getContext("2d");
@@ -1243,6 +1292,14 @@ DELIVERY: voiceover
       }
       let next = r.list, note = "";
       setStage(2);
+      // Music and voiceover are both made here, in one go.
+      if (autoMusic && !musicUrl) {
+        setMsg("Making background music…");
+        await new Promise((res) => setTimeout(res, 50));
+        try { const sr = 22050; setMusicUrl(URL.createObjectURL(toWav(makeMusic(musicStyle, sr), sr))); note += " Background music added."; }
+        catch { note += " Could not make background music on this device."; }
+      }
+      if (!keys.voice && !voiceUrl) note += " No voiceover was added because the server voice is not connected (enter the access code under Server access).";
       if (keys.voice) next = await narrate(next);
       else if (voiceDur) next = fitTo(next, voiceDur);
       const len = next.reduce((a, s) => a + s.duration, 0);
@@ -1360,6 +1417,7 @@ DELIVERY: voiceover
     const dest = hasAudio ? ac.createMediaStreamDestination() : null;
     const outs = hasAudio ? [...Object.values(tracks.current).map((T) => T.gain), ...(clipGain.current ? [clipGain.current] : [])] : [];
     if (dest) outs.forEach((g) => g.connect(dest));
+    for (let k = 0; k < 40 && c.width !== W; k++) await new Promise((r) => setTimeout(r, 50)); // wait until the canvas is full size (the preview is smaller)
     const stream = c.captureStream(fps);
     if (dest) dest.stream.getAudioTracks().forEach((a) => stream.addTrack(a));
     const opts: MediaRecorderOptions = { videoBitsPerSecond: res >= 1440 ? 12e6 : res >= 1080 ? 6e6 : 3e6 };
@@ -1497,6 +1555,11 @@ DELIVERY: voiceover
                 <input type="checkbox" className="mt-0.5" checked={moving} onChange={(e) => setMoving(e.target.checked)} />
                 <span><b className="text-slate-200">Use moving video footage.</b> Finds multiple video clips per scene. Rich visual assets automatically fill in to pack every scene with high visual variety.</span>
               </label>
+              <label className="flex items-start gap-2 rounded-md border border-slate-800 p-2 text-xs text-slate-400">
+                <input type="checkbox" className="mt-0.5" checked={autoMusic} onChange={(e) => setAutoMusic(e.target.checked)} />
+                <span><b className="text-slate-200">Add background music automatically.</b> Generate video makes a music track in the style below and keeps it quietly under the voiceover, so the voice stays clear.</span>
+              </label>
+              <Field l="Music style"><select className={inp} value={musicStyle} onChange={(e) => setMusicStyle(e.target.value as MusicStyle)}>{MUSIC_STYLES.map((m) => <option key={m.id} value={m.id}>{m.label} ({m.note})</option>)}</select></Field>
               <Field l="Pictures that do not match the video shape">
                 <select className={inp} value={fit} onChange={(e) => setFit(e.target.value as Fit)}>
                   <option value="blur">Whole picture over a blurred background</option>
@@ -1591,8 +1654,12 @@ DELIVERY: voiceover
               <button className={btn(true)} disabled={makingMusic} onClick={() => void makeBgMusic()}>{makingMusic ? "Making music…" : "Make background music"}</button>
               <p className="text-xs text-slate-500">Made on your device, so there is nothing to download and no licence to worry about. It is a short loop of simple synthesised instruments, so expect a plain backing track, not a studio recording. You can make another style to replace it.</p>
               <Field l="Or upload your own music"><input type="file" accept="audio/*" className="text-xs" onChange={(e) => e.target.files?.[0] && setMusicUrl(URL.createObjectURL(e.target.files[0]))} /></Field>
+              <label className="flex items-start gap-2 rounded-md border border-slate-800 p-2 text-xs text-slate-400">
+                <input type="checkbox" className="mt-0.5" checked={balance} onChange={(e) => setBalance(e.target.checked)} />
+                <span><b className="text-slate-200">Balance voice and music automatically (recommended).</b> Evens out the voice, keeps the music well below it, and lowers it further while someone is speaking.</span>
+              </label>
               {musicUrl && (<>
-                <Field l={`Music volume: ${Math.round(musicVol * 100)}%`}><input type="range" min={0} max={1} step={0.05} value={musicVol} onChange={(e) => setMusicVol(+e.target.value)} className="w-full accent-violet-500" /></Field>
+                {!balance && <Field l={`Music volume: ${Math.round(musicVol * 100)}%`}><input type="range" min={0} max={1} step={0.05} value={musicVol} onChange={(e) => setMusicVol(+e.target.value)} className="w-full accent-violet-500" /></Field>}
                 <button className={btn()} onClick={() => setMusicUrl("")}>Remove background music</button>
               </>)}
             </>)}
@@ -1632,7 +1699,7 @@ DELIVERY: voiceover
         <main className="vtx-main flex min-w-0 flex-1 flex-col bg-black/40">
           <div className="vtx-stage flex min-h-0 flex-1 items-center justify-center p-2 sm:p-4">
             <div className={`relative ${fmt === "short" ? "vtx-short" : ""}`} style={fmt === "long" ? { width: "min(100%, 880px)", aspectRatio: `${W}/${H}` } : { aspectRatio: `${W}/${H}` }}>
-              <canvas ref={canvasRef} width={W} height={H} className="h-full w-full rounded-md shadow-2xl object-contain" />
+              <canvas ref={canvasRef} width={cw} height={ch} className="h-full w-full rounded-md shadow-2xl object-contain" />
               {safe && fmt === "short" && <div className="pointer-events-none absolute inset-x-0 top-0 bottom-0 rounded-md border border-dashed border-amber-400/50" style={{ margin: "6% 14% 22% 5%" }} />}
             </div>
           </div>
