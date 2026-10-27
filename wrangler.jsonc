@@ -1,6 +1,6 @@
 {
   // Cloudflare Workers settings. The Worker name here must match the name of the project in the Cloudflare dashboard.
-  "name": "vortex-ai-studio",
+  "name": "videoengine",
   "main": "./worker/index.ts",
   "compatibility_date": "2026-10-26",
   "assets": {

@@ -55,7 +55,7 @@ Other commands: `npm run build` (type-check and build) and `npm run lint`.
 
 The same repository also runs on Cloudflare Workers, which can be used instead of Netlify or as a backup.
 
-1. In Cloudflare, open Workers & Pages, create a project from this GitHub repository, and name it `vortex-ai-studio` (it must match `name` in `wrangler.jsonc`).
+1. In Cloudflare, open Workers & Pages, create a project from this GitHub repository, and keep the project name `videoengine` (it must match `name` in `wrangler.jsonc`; change both together if you rename it).
 2. Build command `npm run build`. Leave the deploy command as the default (`npx wrangler deploy`). Choose your production branch.
 3. Add the names from `.env.example` under the Worker's Settings, Variables and Secrets, as type Secret. Only `ACCESS_CODE` is required to start.
 4. The built app is served as static files by Cloudflare. Only `/api/*` runs code (`worker/index.ts`), which uses the same `server/` code as Netlify.
