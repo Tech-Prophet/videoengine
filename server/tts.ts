@@ -5,11 +5,17 @@ const VOICES = ["alloy", "nova", "onyx", "echo", "shimmer", "fable"]; // OpenAI 
 const AURA = ["orion", "arcas", "perseus", "angus", "orpheus", "helios", "zeus", "asteria", "luna", "athena", "hera", "stella"];
 const CF_VOICES = ["melo", ...AURA];
 
+// The Cloudflare voice settings are named CF_TTS_* on purpose. Cloudflare's own build system uses CLOUDFLARE_API_TOKEN and
+// CLOUDFLARE_ACCOUNT_ID as its login, so a voice-only token stored under those names breaks the build on Cloudflare.
+// The old names are still read as a fallback, so an existing Netlify setup keeps working.
+const cfAccount = (env: Env) => env.CF_TTS_ACCOUNT_ID || env.CLOUDFLARE_ACCOUNT_ID || "";
+const cfToken = (env: Env) => env.CF_TTS_API_TOKEN || env.CLOUDFLARE_API_TOKEN || "";
+
 export type VoiceProvider = "cloudflare" | "openai" | "";
 // Which voice service this server will use. Cloudflare comes first because it has a free daily allowance.
 // Set TTS_PROVIDER=openai to prefer OpenAI when both are configured.
 export function voiceProvider(env: Env): VoiceProvider {
-  const cf = !!(env.CLOUDFLARE_ACCOUNT_ID && env.CLOUDFLARE_API_TOKEN);
+  const cf = !!(cfAccount(env) && cfToken(env));
   const oa = !!env.OPENAI_TTS_API_KEY;
   if (env.TTS_PROVIDER === "openai" && oa) return "openai";
   if (env.TTS_PROVIDER === "cloudflare" && cf) return "cloudflare";
@@ -20,8 +26,8 @@ const MP3 = { "content-type": "audio/mpeg" };
 
 // Cloudflare Workers AI: MeloTTS (English) or Deepgram Aura-1. Free daily allowance; keys stay on the server.
 async function viaCloudflare(env: Env, text: string, voice: string): Promise<Response> {
-  const id = env.CLOUDFLARE_ACCOUNT_ID ?? "", token = env.CLOUDFLARE_API_TOKEN ?? "";
-  if (!/^[0-9a-f]{32}$/i.test(id)) return json({ error: "CLOUDFLARE_ACCOUNT_ID on the server looks wrong. It should be 32 letters and numbers." }, 500);
+  const id = cfAccount(env), token = cfToken(env);
+  if (!/^[0-9a-f]{32}$/i.test(id)) return json({ error: "The Cloudflare account ID saved on the server looks wrong. It should be 32 letters and numbers." }, 500);
   const aura = voice !== "melo";
   const r = await fetch(`https://api.cloudflare.com/client/v4/accounts/${id}/ai/run/${aura ? "@cf/deepgram/aura-1" : "@cf/myshell-ai/melotts"}`, {
     method: "POST",
@@ -74,7 +80,7 @@ export async function tts(req: Request, env: Env) {
   const denied = guard(req, env);
   if (denied) return denied;
   const provider = voiceProvider(env);
-  if (!provider) return json({ error: "No voice service is set on the server. Add CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN (free), or OPENAI_TTS_API_KEY." }, 500);
+  if (!provider) return json({ error: "No voice service is set on the server. Add CF_TTS_ACCOUNT_ID and CF_TTS_API_TOKEN (free), or OPENAI_TTS_API_KEY." }, 500);
 
   let body: { text?: unknown; voice?: unknown };
   try { body = await req.json(); } catch { return json({ error: "Request body must be JSON." }, 400); }

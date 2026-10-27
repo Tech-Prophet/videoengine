@@ -21,9 +21,11 @@ API keys never go in the browser. Three Netlify Functions hold them on the serve
 
 | Function | Purpose | Needs |
 | --- | --- | --- |
-| `/api/tts` | AI voiceover | `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` (free allowance), or `OPENAI_TTS_API_KEY` |
+| `/api/tts` | AI voiceover | `CF_TTS_ACCOUNT_ID` + `CF_TTS_API_TOKEN` (free allowance), or `OPENAI_TTS_API_KEY` |
 | `/api/stock` | Pexels and Pixabay search | `PEXELS_API_KEY`, `PIXABAY_API_KEY` |
 | `/api/status` | Tells the app which keys exist (true or false only) | none |
+
+The Cloudflare voice names start with `CF_TTS_` on purpose: Cloudflare's own build system treats `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` as its login, so a voice-only token under those names makes Cloudflare builds fail. The old names are still read as a fallback for Netlify.
 
 If both voice services are set, Cloudflare is used (set `TTS_PROVIDER=openai` to prefer OpenAI). Cloudflare offers 12 named English voices (Deepgram Aura-1, male and female) plus one standard female voice (MeloTTS). The named voices use the free daily allowance about 70 times faster than the standard one (roughly 8 minutes of speech a day against many hours). OpenAI offers six voices.
 
