@@ -53,7 +53,7 @@ Other commands: `npm run build` (type-check and build) and `npm run lint`.
 
 ## Known limits
 
-- Export records in real time, so the tab must stay open and in front for the full length of the video. The file is WebM on most browsers; MP4 only where the browser records it.
+- Export records in real time, so the tab must stay open and in front for the full length of the video. The app asks the browser for MP4 first (best for sharing and uploading) and falls back to WebM when the browser cannot record MP4. The download button shows which one you got. MP4 recorded this way is a streaming-style MP4; it plays and uploads on common apps, but some editors may show an unknown length.
 - Pollinations is used without a key. Its current free limits and commercial-use terms have not been verified.
 - Live calls to Cloudflare voice, OpenAI, Pexels and Pixabay have not been tested end to end. The Cloudflare voice reply format was handled from its documentation (raw MP3 or base64 JSON) and not confirmed with a real call; whether the free daily allowance applies to API calls is also unconfirmed. The functions have local mock tests only.
 - Pexels and Pixabay ask for a visible source. While their visuals are in the video, the app keeps a credit line in the description automatically (it names the sites, not individual photographers).

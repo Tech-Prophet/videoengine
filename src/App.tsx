@@ -39,10 +39,16 @@ const shotsOf = (sc: Scene) => (sc.onCam ? sc.clips.slice(0, 1) : sc.clips);
 const SHOT_SECONDS_VIDEO = 5;
 const shotCount = (dur: number, vid = false) => (vid ? Math.max(2, Math.min(8, Math.ceil(dur / SHOT_SECONDS_VIDEO))) : Math.max(3, Math.min(12, Math.ceil(dur / SHOT_SECONDS))));
 
+// MP4 first: it plays and uploads almost everywhere (WhatsApp, Messenger, Instagram, TikTok, YouTube).
+// WebM is only the fallback for browsers that cannot record MP4.
 const MIME_CANDIDATES = [
+  "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
+  "video/mp4;codecs=avc1,mp4a.40.2",
+  "video/mp4;codecs=h264,aac",
+  "video/mp4;codecs=avc1.42E01E,opus",
+  "video/mp4",
   "video/webm;codecs=vp8,opus",
   "video/webm;codecs=vp9,opus",
-  "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
   "video/webm",
 ];
 
@@ -1069,8 +1075,9 @@ DELIVERY: voiceover
     const f = new File([file.blob], file.name, { type: file.blob.type || "video/webm" });
     try {
       if (typeof navigator.canShare === "function" && navigator.canShare({ files: [f] })) {
-        await navigator.share({ files: [f], title: vTitle.trim() || undefined, text: shareText || undefined });
-        setMsg("Shared. If the other app dropped the title or description, use “Copy title and description”.");
+        // File only. Sending text with the file makes apps such as Messenger send just the text and drop the video.
+        await navigator.share({ files: [f] });
+        setMsg("Shared. The title and description are not sent with the video. Use “Copy title and description” to paste them.");
       } else setMsg("This browser cannot share files. Download the video, then attach it in the app you want. “Copy title and description” helps with the text.");
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") return; // you closed the share sheet
@@ -1272,7 +1279,7 @@ DELIVERY: voiceover
     // Retry: browser-default codec and no audio track, which works on most phones.
     const hasAudio = attempt === 0 && (Object.keys(tracks.current).length > 0 || live.current.scenes.some((s) => s.onCam));
     const mime = attempt === 0
-      ? MIME_CANDIDATES.map((m) => (hasAudio ? m : m.replace(/,(?:opus|mp4a[^,]*)$/, ""))).find((m) => MediaRecorder.isTypeSupported(m))
+      ? MIME_CANDIDATES.map((m) => (hasAudio ? m : m.replace(/,(?:opus|aac|mp4a[^,]*)$/, ""))).find((m) => MediaRecorder.isTypeSupported(m))
       : undefined;
     if (attempt === 0 && !mime) { setMsg("This browser can't record video. Use desktop Chrome or Edge."); return; }
     pause(); setFile(null); setExporting(true); setStage(4);
@@ -1385,7 +1392,7 @@ DELIVERY: voiceover
         <div className="ml-auto flex items-center gap-2 sm:gap-3">
           {msg && <span className="basis-full text-xs text-amber-300 sm:basis-auto sm:max-w-xs sm:truncate sm:text-slate-400" title={msg}>{msg}</span>}
           {file && <button onClick={() => void shareVideo()} className={`${btn()} text-xs sm:text-sm`}>Share</button>}
-          {file && <a href={file.url} download={file.name} className={`${btn(true)} text-xs sm:text-sm`}>Download {file.mb.toFixed(1)} MB</a>}
+          {file && <a href={file.url} download={file.name} className={`${btn(true)} text-xs sm:text-sm`}>Download {file.name.split(".").pop()?.toUpperCase()} {file.mb.toFixed(1)} MB</a>}
           <button onClick={() => void exportVideo()} disabled={exporting || busy} className={`${btn()} text-xs sm:text-sm`}>{exporting ? `Rendering ${Math.round((t / (total || 1)) * 100)}%` : "Re-render"}</button>
         </div>
       </header>
@@ -1543,9 +1550,9 @@ DELIVERY: voiceover
               <button className={btn()} onClick={() => void downloadThumb()}>Download thumbnail</button>
               <div className="space-y-2 border-t border-slate-800 pt-4">
                 <h3 className="text-sm font-semibold">Share</h3>
-                <button className={`${btn(true)} w-full`} disabled={!file} onClick={() => void shareVideo()}>{file ? `Share video (${file.mb.toFixed(1)} MB)` : "Share video (render it first)"}</button>
+                <button className={`${btn(true)} w-full`} disabled={!file} onClick={() => void shareVideo()}>{file ? `Share video (${file.name.split(".").pop()?.toUpperCase()}, ${file.mb.toFixed(1)} MB)` : "Share video (render it first)"}</button>
                 <button className={`${btn()} w-full`} disabled={!shareText} onClick={() => void copyShareText()}>Copy title and description</button>
-                <p className="text-xs text-slate-500">Opens your phone's share menu so you can send the video to WhatsApp, Telegram, Google Drive and more. The video goes straight from this device to the app you pick; this app does not upload or host it. Desktop browsers often cannot share files, so use Download there.</p>
+                <p className="text-xs text-slate-500">Opens your phone's share menu so you can send the video to WhatsApp, Telegram, Google Drive and more. Only the video file is sent, not the title or description (use the copy button for those). It goes straight from this device to the app you pick; this app does not upload or host it. Desktop browsers often cannot share files, so use Download there.</p>
               </div>
               <ul className="space-y-1 text-xs">
                 {checks.map((c) => <li key={c.t} className={c.ok ? "text-emerald-400" : "text-slate-500"}>{c.ok ? "✓" : "○"} {c.t}</li>)}
