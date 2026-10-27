@@ -752,6 +752,7 @@ export default function App() {
   const [caps, setCaps] = useState(saved?.caps ?? true);
   const [fit, setFit] = useState<Fit>(saved?.fit ?? "blur");
   const [adding, setAdding] = useState(false);
+  const [showCode, setShowCode] = useState(false);
   const [safe, setSafe] = useState(true);
   const [busy, setBusy] = useState(false);
   const [stage, setStage] = useState(0);
@@ -1519,9 +1520,10 @@ DELIVERY: voiceover
               <details className="rounded-md border border-slate-800 p-3 text-sm">
                 <summary className="cursor-pointer text-slate-300">Server access (optional)</summary>
                 <div className="mt-3 space-y-3">
-                  <Field l="Access code"><input type="password" className={inp} value={code} onChange={(e) => setCode(e.target.value.trim())} /></Field>
+                  <Field l="Access code"><input type={showCode ? "text" : "password"} autoComplete="off" autoCapitalize="none" spellCheck={false} className={inp} value={code} onChange={(e) => setCode(e.target.value.trim())} /></Field>
+                  <label className="flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={showCode} onChange={(e) => setShowCode(e.target.checked)} />Show the code (to check for typos)</label>
                   {serverMsg && <p className="text-xs text-slate-300">{serverMsg}{serverMsg === "Connected." && ` AI voiceover: ${server.voice ? `on (${server.voiceProvider === "cloudflare" ? "Cloudflare, free allowance" : "OpenAI"})` : "off"}. Pexels: ${server.pexels ? "on" : "off"}. Pixabay: ${server.pixabay ? "on" : "off"}.`}</p>}
-                  <p className="text-xs text-slate-500">Provider keys now live on the server (Netlify) and never reach this browser. Enter the access code you set there to unlock AI voiceover and Pexels or Pixabay stock footage. Without it, the app still uses free AI images and your own uploads. When Pexels or Pixabay visuals are used, a credit line is added to the description automatically. You can also upload your own clips per scene in the Scenes tab.</p>
+                  <p className="text-xs text-slate-500">Provider keys live on the server and never reach this browser. Enter the access code you set there to unlock AI voiceover and Pexels or Pixabay stock footage. Without it, the app still uses free AI images and your own uploads. When Pexels or Pixabay visuals are used, a credit line is added to the description automatically. You can also upload your own clips per scene in the Scenes tab.</p>
                 </div>
               </details>
             </>)}
