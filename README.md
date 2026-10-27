@@ -51,6 +51,17 @@ The functions only run on Netlify, so locally the app shows "Could not reach the
 
 Other commands: `npm run build` (type-check and build) and `npm run lint`.
 
+## Set up on Cloudflare (Workers)
+
+The same repository also runs on Cloudflare Workers, which can be used instead of Netlify or as a backup.
+
+1. In Cloudflare, open Workers & Pages, create a project from this GitHub repository, and name it `vortex-ai-studio` (it must match `name` in `wrangler.jsonc`).
+2. Build command `npm run build`. Leave the deploy command as the default (`npx wrangler deploy`). Choose your production branch.
+3. Add the names from `.env.example` under the Worker's Settings, Variables and Secrets, as type Secret. Only `ACCESS_CODE` is required to start.
+4. The built app is served as static files by Cloudflare. Only `/api/*` runs code (`worker/index.ts`), which uses the same `server/` code as Netlify.
+
+`functions/api/` holds the equivalent entry points for Cloudflare Pages, if you prefer Pages to Workers. The Cloudflare setup has only been checked with local mock tests, not on a live Cloudflare account.
+
 ## Known limits
 
 - Export records in real time, so the tab must stay open and in front for the full length of the video. The app asks the browser for MP4 first (best for sharing and uploading) and falls back to WebM when the browser cannot record MP4. The download button shows which one you got. MP4 recorded this way is a streaming-style MP4; it plays and uploads on common apps, but some editors may show an unknown length.
