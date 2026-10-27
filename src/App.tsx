@@ -4,6 +4,7 @@ import { makeMusic, MUSIC_STYLES } from "./music.ts";
 import type { MusicStyle } from "./music.ts";
 import { XFD, fillsFrame, moveFor, motionP, pose } from "./motion.ts";
 import type { Move } from "./motion.ts";
+import { drawCaption } from "./captions.ts";
 
 type Fmt = "long" | "short";
 type Tab = "create" | "scenes" | "audio" | "camera" | "publish";
@@ -650,13 +651,7 @@ function drawFrame(ctx: CanvasRenderingContext2D, L: Live, i: number, tt: number
       const nCh = Math.max(1, Math.ceil(cue.ws.length / 7)), size = Math.ceil(cue.ws.length / nCh);
       const pr = Math.max(0, Math.min(0.999, (local - cue.t0) / Math.max(0.2, cue.t1 - cue.t0)));
       const idx = Math.min(nCh - 1, Math.floor(pr * nCh));
-      ctx.font = `300 ${48 * u}px ${FONT}`;
-      const cl = wrap(ctx, cue.ws.slice(idx * size, idx * size + size).join(" "), w * 0.8);
-      const cy = h * (w > h ? 0.88 : 0.72), lh = 62 * u;
-      ctx.fillStyle = "#fff";
-      ctx.shadowColor = "rgba(0,0,0,.85)"; ctx.shadowBlur = 6 * u; ctx.shadowOffsetY = 1 * u;
-      cl.forEach((l, k) => ctx.fillText(l, w / 2, cy + (k - (cl.length - 1) / 2) * lh));
-      ctx.shadowBlur = 0; ctx.shadowOffsetY = 0; ctx.shadowColor = "transparent";
+      drawCaption(ctx, w, h, cue.ws.slice(idx * size, idx * size + size).join(" "));
     }
   }
 
