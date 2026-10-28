@@ -18,7 +18,7 @@ type Mark = { at: number; len: number; text: string }; // one narrated sentence:
 type Scene = Draft & { id: string; duration: number; palette: number; clips: Clip[]; marks?: Mark[] };
 type Meta = { title?: string; description?: string; tags?: string[]; thumb?: string; intro?: string };
 type Parsed = { meta: Meta; scenes: Draft[] };
-type Live = { scenes: Scene[]; starts: number[]; total: number; fit: Fit; caps: boolean; W: number; H: number; intro: string; voiceVol: number; musicVol: number; duck: boolean };
+type Live = { scenes: Scene[]; starts: number[]; total: number; fit: Fit; caps: boolean; W: number; H: number; intro: string; voiceVol: number; musicVol: number; duck: boolean; lead: number; tail: number; outro: string };
 
 const PALETTES = [["#1b1442", "#6d3df0"], ["#0b1f33", "#13a8c9"], ["#0f2a22", "#2fb67c"], ["#3a1212", "#e8643a"], ["#1d1d3a", "#d6458f"]];
 const FONT = "Inter, system-ui, sans-serif";
@@ -470,7 +470,7 @@ const borrowVisuals = (list: Scene[]): Scene[] =>
 const SAVE_KEY = "vortex-project";
 type Saved = {
   v: 1; fmt: Fmt; res: number; fps: number; wpm: number; topic: string; tone: string; minutes: number; minSec: number;
-  scriptText: string; intro: string; source: Source; moving: boolean; caps: boolean; fit?: Fit; musicStyle?: MusicStyle; autoMusic?: boolean; balance?: boolean;
+  scriptText: string; intro: string; source: Source; moving: boolean; caps: boolean; fit?: Fit; musicStyle?: MusicStyle; autoMusic?: boolean; balance?: boolean; leadSec?: number; outro?: string;
   vTitle: string; vDesc: string; vTags: string; thumbText: string;
   scenes: Omit<Scene, "clips" | "marks">[];
 };
@@ -700,13 +700,26 @@ function drawFrame(ctx: CanvasRenderingContext2D, L: Live, i: number, tt: number
 
   ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillStyle = "#fff";
 
-  const introEnd = Math.min(5.5, L.scenes[0].duration - 0.3, L.total * 0.4);
-  if (L.intro && tt > 0.4 && tt < introEnd) {
-    ctx.globalAlpha = Math.max(0, Math.min(1, (tt - 0.4) / 0.5, (introEnd - tt) / 0.5));
-    ctx.font = `700 ${70 * u}px ${FONT}`;
-    ctx.shadowColor = "rgba(0,0,0,.7)"; ctx.shadowBlur = 20 * u;
-    const lines = wrap(ctx, L.intro, w * 0.8), lh = 84 * u, y0 = h * 0.42 - ((lines.length - 1) * lh) / 2;
-    lines.forEach((l, k) => ctx.fillText(l, w / 2, y0 + k * lh));
+  // Title: bold, large, slightly above centre, thin dark outline. With a music-only lead-in it shows while the music plays alone.
+  const introEnd = Math.min(L.lead > 0 ? L.lead + 1.8 : 5.5, L.scenes[0].duration - 0.3, L.total * 0.4);
+  const introStart = L.lead > 0 ? 0.5 : 0.4;
+  if (L.intro && tt > introStart && tt < introEnd) {
+    ctx.globalAlpha = Math.max(0, Math.min(1, (tt - introStart) / 0.7, (introEnd - tt) / 0.6));
+    ctx.font = `800 ${74 * u}px ${FONT}`;
+    ctx.lineJoin = "round"; ctx.lineWidth = 5 * u; ctx.strokeStyle = "rgba(0,0,0,.85)";
+    ctx.shadowColor = "rgba(0,0,0,.6)"; ctx.shadowBlur = 16 * u;
+    const lines = wrap(ctx, L.intro, w * 0.8), lh = 90 * u, y0 = h * 0.4 - ((lines.length - 1) * lh) / 2;
+    lines.forEach((l, k) => { ctx.strokeText(l, w / 2, y0 + k * lh); ctx.fillText(l, w / 2, y0 + k * lh); });
+    ctx.shadowBlur = 0; ctx.shadowColor = "transparent"; ctx.globalAlpha = 1;
+  }
+  // Ending message: typed by you, shown over the last seconds while the music rises and fades.
+  if (L.outro && L.tail > 0 && tt > L.total - L.tail + 0.3 && tt < L.total - 0.6) {
+    ctx.globalAlpha = Math.max(0, Math.min(1, (tt - (L.total - L.tail + 0.3)) / 0.7));
+    ctx.font = `800 ${64 * u}px ${FONT}`;
+    ctx.lineJoin = "round"; ctx.lineWidth = 5 * u; ctx.strokeStyle = "rgba(0,0,0,.85)";
+    ctx.shadowColor = "rgba(0,0,0,.6)"; ctx.shadowBlur = 16 * u;
+    const lines = wrap(ctx, L.outro, w * 0.8), lh = 80 * u, y0 = h * 0.45 - ((lines.length - 1) * lh) / 2;
+    lines.forEach((l, k) => { ctx.strokeText(l, w / 2, y0 + k * lh); ctx.fillText(l, w / 2, y0 + k * lh); });
     ctx.shadowBlur = 0; ctx.shadowColor = "transparent"; ctx.globalAlpha = 1;
   }
 
@@ -784,6 +797,10 @@ export default function App() {
   const [musicVol, setMusicVol] = useState(0.15);
   const [musicStyle, setMusicStyle] = useState<MusicStyle>(saved?.musicStyle ?? "calm");
   const [autoMusic, setAutoMusic] = useState(saved?.autoMusic ?? true); // Generate video adds a music track by itself
+  const [leadSec, setLeadSec] = useState(saved?.leadSec ?? 4); // seconds of music alone before the voice and captions start
+  const [outro, setOutro] = useState(saved?.outro ?? ""); // typed ending message, shown over the last seconds
+  const [leadUsed, setLeadUsed] = useState(0); // lead-in and ending actually built into the current timeline
+  const [tailUsed, setTailUsed] = useState(0);
   const [balance, setBalance] = useState(saved?.balance ?? true); // level the voice and keep the music under it
   const [voiceRms, setVoiceRms] = useState<number | null>(null); // measured loudness of the voiceover and the music
   const [musicRms, setMusicRms] = useState<number | null>(null);
@@ -835,8 +852,8 @@ export default function App() {
   const sel = scenes.find((s) => s.id === selId) ?? scenes[0];
   const starts = useMemo(() => scenes.reduce<number[]>((a, _s, i) => [...a, i ? a[i - 1] + scenes[i - 1].duration : 0], []), [scenes]);
   const total = scenes.reduce((a, s) => a + s.duration, 0);
-  const live = useRef<Live>({ scenes, starts, total, fit, caps, W: cw, H: ch, intro, voiceVol: voiceGain, musicVol: musicGain, duck: balance });
-  live.current = { scenes, starts, total, fit, caps, W: cw, H: ch, intro, voiceVol: voiceGain, musicVol: musicGain, duck: balance };
+  const live = useRef<Live>({ scenes, starts, total, fit, caps, W: cw, H: ch, intro, voiceVol: voiceGain, musicVol: musicGain, duck: balance, lead: leadUsed, tail: tailUsed, outro });
+  live.current = { scenes, starts, total, fit, caps, W: cw, H: ch, intro, voiceVol: voiceGain, musicVol: musicGain, duck: balance, lead: leadUsed, tail: tailUsed, outro };
 
   const totalWords = Math.round(minutes * wpm);
   const nScenes = fmt === "short" ? 4 : Math.max(6, Math.min(16, Math.round(minutes * 2)));
@@ -911,14 +928,14 @@ DELIVERY: voiceover
     const id = window.setTimeout(() => {
       try {
         const data: Saved = {
-          v: 1, fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, vTitle, vDesc, vTags, thumbText,
+          v: 1, fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, vTitle, vDesc, vTags, thumbText,
           scenes: scenes.map((s) => ({ id: s.id, title: s.title, text: s.text, onScreen: s.onScreen, visual: s.visual, duration: s.duration, palette: s.palette })),
         };
         localStorage.setItem(SAVE_KEY, JSON.stringify(data));
       } catch { /* storage full or blocked: skip */ }
     }, 800);
     return () => clearTimeout(id);
-  }, [fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, vTitle, vDesc, vTags, thumbText, scenes]);
+  }, [fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, vTitle, vDesc, vTags, thumbText, scenes]);
   useEffect(() => {
     if (!code) { setServer(NO_PROVIDERS); setServerMsg(""); return undefined; }
     const ctl = new AbortController();
@@ -1009,7 +1026,9 @@ DELIVERY: voiceover
         const vt = tracks.current.voice, mt = tracks.current.music;
         // Music ducks under speech: down quickly when a sentence starts, back up slowly afterwards.
         const duck = L.duck ? duckFactor(!!(vt && vt.el.src), sc?.marks, local) : 1;
-        const vTarget = sc?.onCam ? 0 : L.voiceVol, mTarget = L.musicVol * (sc?.onCam ? 0.25 : 1) * duck;
+        const vTarget = sc?.onCam ? 0 : L.voiceVol, mTarget = L.musicVol * (sc?.onCam ? 0.25 : 1) * duck
+          * (L.lead > 0 && tt < L.lead ? 1.7 : 1) // a little more music while it plays alone at the start
+          * (L.tail > 0 && tt > L.total - L.tail ? 1.3 * Math.max(0, Math.min(1, (L.total - tt) / 2.5)) : 1); // swell, then fade out at the end
         if (vt && Math.abs(vt.gain.gain.value - vTarget) > 0.001) vt.gain.gain.setTargetAtTime(vTarget, ac.currentTime, 0.03);
         if (mt && Math.abs(mt.gain.gain.value - mTarget) > 0.001) mt.gain.gain.setTargetAtTime(mTarget, ac.currentTime, mTarget < mt.gain.gain.value ? 0.08 : 0.5);
       }
@@ -1273,6 +1292,14 @@ DELIVERY: voiceover
       chunks.forEach((c) => { data.set(c, o); o += c.length; });
       parts.push({ data, dur: Math.max(2, len / sr + 0.3), marks });
     }
+    // Music-only lead-in: silence before the first sentence; the first scene, its captions and the picture shift by the same amount.
+    const lead = parts[0]?.data && leadSec > 0 ? leadSec : 0;
+    if (lead) {
+      const p0 = parts[0], pad = new Float32Array(Math.round(lead * sr) + p0.data!.length);
+      pad.set(p0.data!, Math.round(lead * sr));
+      parts[0] = { data: pad, dur: p0.dur + lead, marks: p0.marks?.map((m) => ({ ...m, at: m.at + lead })) };
+    }
+    setLeadUsed(lead);
     if (parts.length) parts[parts.length - 1].dur += 0.8;
     const out = new Float32Array(parts.reduce((a, p) => a + Math.round(p.dur * sr), 0));
     let at = 0;
@@ -1301,6 +1328,7 @@ DELIVERY: voiceover
         catch { note += " Could not make background music on this device."; }
       }
       if (!keys.voice && !voiceUrl) note += " No voiceover was added because the server voice is not connected (enter the access code under Server access).";
+      setLeadUsed(0);
       if (keys.voice) next = await narrate(next);
       else if (voiceDur) next = fitTo(next, voiceDur);
       const len = next.reduce((a, s) => a + s.duration, 0);
@@ -1309,6 +1337,9 @@ DELIVERY: voiceover
         setMsg(`Finished video is ${clock(len)}, shorter than the ${clock(minSec)} minimum.`);
         setStage(0); return;
       }
+      const tail = outro.trim() ? 5 : 3; // ending: typed message (or just a calm music fade-out) after the last word
+      next = next.map((x, k) => (k === next.length - 1 ? { ...x, duration: x.duration + tail } : x));
+      setTailUsed(tail);
       setStage(3);
       const withPics: Scene[] = [];
       aiSt.current = { fails: 0 };
@@ -1567,6 +1598,7 @@ DELIVERY: voiceover
                 <input type="checkbox" className="mt-0.5" checked={autoMusic} onChange={(e) => setAutoMusic(e.target.checked)} />
                 <span><b className="text-slate-200">Add background music automatically.</b> Generate video makes a music track in the style below and keeps it quietly under the voiceover, so the voice stays clear.</span>
               </label>
+              <Field l="Music-only start (seconds before the voice and captions begin)"><select className={inp} value={leadSec} onChange={(e) => setLeadSec(+e.target.value)}>{[0, 2, 3, 4, 5, 6, 8].map((n) => <option key={n} value={n}>{n === 0 ? "None, voice starts at once" : `${n} seconds`}</option>)}</select></Field>
               <Field l="Music style"><select className={inp} value={musicStyle} onChange={(e) => setMusicStyle(e.target.value as MusicStyle)}>{MUSIC_STYLES.map((m) => <option key={m.id} value={m.id}>{m.label} ({m.note})</option>)}</select></Field>
               <Field l="Pictures that do not match the video shape">
                 <select className={inp} value={fit} onChange={(e) => setFit(e.target.value as Fit)}>
@@ -1601,6 +1633,7 @@ DELIVERY: voiceover
 
             {tab === "scenes" && (<>
               <Field l="Intro text (first seconds)"><input className={inp} value={intro} onChange={(e) => setIntro(e.target.value)} placeholder="Opening intro text" /></Field>
+              <Field l="Ending message (last seconds)"><input className={inp} value={outro} onChange={(e) => setOutro(e.target.value)} placeholder="e.g. Subscribe for more true stories" /></Field>
               <div className="space-y-1.5">
                 {scenes.map((s, i) => (
                   <div key={s.id} onClick={() => { setSelId(s.id); seek(starts[i]); }} className={`flex cursor-pointer items-center gap-2 rounded-md border px-2.5 py-2 text-sm ${s.id === sel?.id ? "border-violet-500 bg-slate-900" : "border-slate-800 hover:bg-slate-900"}`}>
