@@ -6,7 +6,6 @@ import { XFD, fillsFrame, moveFor, motionP, pose } from "./motion.ts";
 import type { Move } from "./motion.ts";
 import { drawCaption } from "./captions.ts";
 import { drawTitle } from "./title.ts";
-import { visualCount, writePrompts } from "./prompts.ts";
 import { duckFactor, levels, rmsActive, rmsAll } from "./mix.ts";
 
 type Fmt = "long" | "short";
@@ -17,7 +16,7 @@ type Clip = { url: string; kind: "image" | "video"; src?: "upload" | "ai" | "pex
 // onCam = a person speaks on camera in this scene (their own voice, real lip movement). Otherwise it is narration only.
 type Draft = { title: string; text: string; onScreen: string; visual: string; onCam?: boolean };
 type Mark = { at: number; len: number; text: string }; // one narrated sentence: start and length in seconds, relative to the start of its scene
-type Scene = Draft & { id: string; duration: number; palette: number; clips: Clip[]; marks?: Mark[]; prompts?: string[]; want?: number; pfor?: string };
+type Scene = Draft & { id: string; duration: number; palette: number; clips: Clip[]; marks?: Mark[] };
 type Meta = { title?: string; description?: string; tags?: string[]; thumb?: string; intro?: string };
 type Parsed = { meta: Meta; scenes: Draft[] };
 type Live = { scenes: Scene[]; starts: number[]; total: number; fit: Fit; caps: boolean; W: number; H: number; intro: string; voiceVol: number; musicVol: number; duck: boolean; lead: number; tail: number; outro: string; introColor: string; accent: string; fps: number };
@@ -472,7 +471,7 @@ const borrowVisuals = (list: Scene[]): Scene[] =>
 const SAVE_KEY = "vortex-project";
 type Saved = {
   v: 1; fmt: Fmt; res: number; fps: number; wpm: number; topic: string; tone: string; minutes: number; minSec: number;
-  scriptText: string; intro: string; source: Source; moving: boolean; caps: boolean; fit?: Fit; musicStyle?: MusicStyle; autoMusic?: boolean; balance?: boolean; leadSec?: number; outro?: string; introColor?: string; accent?: string; styleLine?: string; charNotes?: string;
+  scriptText: string; intro: string; source: Source; moving: boolean; caps: boolean; fit?: Fit; musicStyle?: MusicStyle; autoMusic?: boolean; balance?: boolean; leadSec?: number; outro?: string; introColor?: string; accent?: string;
   vTitle: string; vDesc: string; vTags: string; thumbText: string;
   scenes: Omit<Scene, "clips" | "marks">[];
 };
@@ -789,8 +788,6 @@ export default function App() {
   const [outro, setOutro] = useState(saved?.outro ?? ""); // typed ending message, shown over the last seconds
   const [introColor, setIntroColor] = useState(saved?.introColor ?? "#ffffff"); // title colours; *starred* words use the accent
   const [accent, setAccent] = useState(saved?.accent ?? "#ffd400");
-  const [styleLine, setStyleLine] = useState(saved?.styleLine ?? "photorealistic documentary photography, soft natural light, cinematic"); // added to every picture prompt
-  const [charNotes, setCharNotes] = useState(saved?.charNotes ?? ""); // characters or details to keep the same across prompts
   const [leadUsed, setLeadUsed] = useState(0); // music-only start actually built into the current voiceover
   const [balance, setBalance] = useState(saved?.balance ?? true); // level the voice and keep the music under it
   const [voiceRms, setVoiceRms] = useState<number | null>(null); // measured loudness of the voiceover and the music
@@ -946,14 +943,14 @@ DELIVERY: voiceover
     const id = window.setTimeout(() => {
       try {
         const data: Saved = {
-          v: 1, fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, styleLine, charNotes, vTitle, vDesc, vTags, thumbText,
-          scenes: scenes.map((s) => ({ id: s.id, title: s.title, text: s.text, onScreen: s.onScreen, visual: s.visual, duration: s.duration, palette: s.palette, prompts: s.prompts, want: s.want, pfor: s.pfor })),
+          v: 1, fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, vTitle, vDesc, vTags, thumbText,
+          scenes: scenes.map((s) => ({ id: s.id, title: s.title, text: s.text, onScreen: s.onScreen, visual: s.visual, duration: s.duration, palette: s.palette })),
         };
         localStorage.setItem(SAVE_KEY, JSON.stringify(data));
       } catch { /* storage full or blocked: skip */ }
     }, 800);
     return () => clearTimeout(id);
-  }, [fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, styleLine, charNotes, vTitle, vDesc, vTags, thumbText, scenes]);
+  }, [fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, vTitle, vDesc, vTags, thumbText, scenes]);
   useEffect(() => {
     if (!code) { setServer(NO_PROVIDERS); setServerMsg(""); return undefined; }
     const ctl = new AbortController();
@@ -1134,35 +1131,6 @@ DELIVERY: voiceover
     return undefined;
   }, [thumbText, vTitle, scenes, tab, thumbClip, thumbBump]);
 
-  // Picture prompts (for Whisk or any image tool): the app works out how many visuals each scene needs and writes one prompt for each.
-  const keyOf = (x: Scene) => `${x.text}|${x.visual}`;
-  const countOf = (x: Scene) => x.want ?? visualCount(x.text, x.duration);
-  const promptOpts = (i: number) => ({ style: styleLine, notes: charNotes, wide: fmt === "long", sceneIndex: i });
-  const draftPrompts = (x: Scene, i: number): Scene => ({ ...x, prompts: writePrompts(x, countOf(x), promptOpts(i)), pfor: keyOf(x) });
-  const writeThis = () => sel && setScenes((ss) => ss.map((x, i) => (x.id === sel.id ? draftPrompts(x, i) : x)));
-  const writeAll = () => {
-    if (scenes.some((x) => x.prompts?.length) && !window.confirm("Replace the prompts you already have, including any you edited?")) return;
-    setScenes((ss) => ss.map(draftPrompts));
-    setMsg("Prompts written for every scene. Open a scene to read or edit them.");
-  };
-  const copyText = async (text: string, what: string) => {
-    try { await navigator.clipboard.writeText(text); setMsg(`${what} copied.`); }
-    catch { setMsg("Could not copy automatically. Press and hold the text to copy it by hand."); }
-  };
-  const copyAllPrompts = () => {
-    const text = scenes.map((x, i) => (x.prompts?.length ? `Scene ${i + 1}: ${x.title}\n${x.prompts.map((q, k) => `${k + 1}) ${q}`).join("\n")}` : "")).filter(Boolean).join("\n\n");
-    if (!text) { setMsg("Write the prompts first."); return; }
-    void copyText(text, "All prompts");
-  };
-  const setWant = (d: number) => {
-    if (!sel) return;
-    const n = Math.max(1, Math.min(5, countOf(sel) + d));
-    setScenes((ss) => ss.map((x, i) => {
-      if (x.id !== sel.id) return x;
-      const fresh = writePrompts(x, n, promptOpts(i));
-      return { ...x, want: n, prompts: x.prompts?.length ? Array.from({ length: n }, (_, k) => x.prompts![k] ?? fresh[k]) : x.prompts };
-    }));
-  };
   const patch = (p: Partial<Scene>) => sel && setScenes((ss) => ss.map((s) => (s.id === sel.id ? { ...s, ...p } : s)));
   const addScene = () => { const s = mkScene({ title: `Scene ${scenes.length + 1}`, text: "", onScreen: "", visual: "" }, scenes.length, wpm); setScenes([...scenes, s]); setSelId(s.id); };
   const move = (i: number, d: number) => { const j = i + d; if (j < 0 || j >= scenes.length) return; const c = [...scenes]; [c[i], c[j]] = [c[j], c[i]]; setScenes(c); };
@@ -1295,9 +1263,7 @@ DELIVERY: voiceover
     const norm = (x: string) => x.replace(/\s+/g, " ").trim().toLowerCase();
     const pool = scenes.filter((s) => s.clips.some(mine));
     const list = p.scenes.map((d, i) => {
-      let sc = mkScene(d, i, wpm);
-      const prev = scenes.find((x) => x.prompts?.length && norm(x.text) === norm(d.text));
-      if (prev) sc = { ...sc, prompts: prev.prompts, want: prev.want, pfor: `${sc.text}|${sc.visual}` }; // keep prompts for scenes whose narration did not change
+      const sc = mkScene(d, i, wpm);
       const o = pool.find((x) => norm(x.text) === norm(d.text));
       if (!o) return sc;
       pool.splice(pool.indexOf(o), 1);
@@ -1691,15 +1657,6 @@ DELIVERY: voiceover
                 <label className="flex items-center gap-1.5">Accent colour <input type="color" value={accent} onChange={(e) => setAccent(e.target.value)} className="h-7 w-9 rounded border border-slate-700 bg-transparent" /></label>
               </div>
               <p className="text-xs text-slate-500">Keep titles short (2 to 4 words). They are shown in capitals. Put stars around words to colour them: THE *BEE*. With no stars, the last word gets the accent colour.</p>
-              <details className="rounded-md border border-slate-800 p-3 text-sm">
-                <summary className="cursor-pointer font-medium">Picture prompts for Whisk (optional)</summary>
-                <div className="space-y-3 pt-3">
-                  <p className="text-xs text-slate-500">The app reads each scene, decides how many pictures it needs, and writes one prompt per picture. They are first drafts: you can edit any of them. Nothing here changes how the video is made.</p>
-                  <Field l="Art style (added to every prompt)"><input className={inp} value={styleLine} onChange={(e) => setStyleLine(e.target.value)} /></Field>
-                  <Field l="Characters or details to keep the same (optional)"><textarea className={inp} rows={3} value={charNotes} onChange={(e) => setCharNotes(e.target.value)} placeholder="e.g. Ada: young woman, long braids, yellow dress" /></Field>
-                  <div className="flex gap-2"><button className={btn(true)} onClick={writeAll}>Write prompts for all scenes</button><button className={btn()} onClick={copyAllPrompts}>Copy all prompts</button></div>
-                </div>
-              </details>
               <div className="space-y-1.5">
                 {scenes.map((s, i) => (
                   <div key={s.id} onClick={() => { setSelId(s.id); seek(starts[i]); }} className={`flex cursor-pointer items-center gap-2 rounded-md border px-2.5 py-2 text-sm ${s.id === sel?.id ? "border-violet-500 bg-slate-900" : "border-slate-800 hover:bg-slate-900"}`}>
@@ -1719,25 +1676,6 @@ DELIVERY: voiceover
                 <Field l="Duration (seconds)"><input type="number" min={1} step={0.5} className={inp} value={Number(sel.duration.toFixed(1))} onChange={(e) => patch({ duration: Math.max(1, +e.target.value), marks: undefined })} /></Field>
                 <div className="flex gap-2">{PALETTES.map((p, i) => <button key={i} onClick={() => patch({ palette: i })} className={`h-7 w-7 rounded-full border-2 ${sel.palette === i ? "border-white" : "border-transparent"}`} style={{ background: `linear-gradient(135deg,${p[0]},${p[1]})` }} />)}</div>
                 <Field l="Visual search keywords"><input className={inp} value={sel.visual} onChange={(e) => patch({ visual: e.target.value })} /></Field>
-                <div className="space-y-2 rounded-md border border-slate-800 p-2.5">
-                  <div className="flex items-center gap-2 text-xs text-slate-300">
-                    <span className="flex-1">Pictures this scene needs: <b>{countOf(sel)}</b> {sel.want ? "(set by you)" : "(worked out from the story)"}</span>
-                    <button aria-label="Fewer pictures" className="rounded border border-slate-700 px-2.5 py-1 hover:bg-slate-800" onClick={() => setWant(-1)}>−</button>
-                    <button aria-label="More pictures" className="rounded border border-slate-700 px-2.5 py-1 hover:bg-slate-800" onClick={() => setWant(1)}>+</button>
-                  </div>
-                  <p className="text-xs text-slate-500">Your own pictures in this scene: {sel.clips.filter(mine).length} of {countOf(sel)}</p>
-                  {!!sel.prompts?.length && sel.pfor !== keyOf(sel) && <p className="text-xs text-amber-300">The narration or keywords changed since these prompts were written. Press “Write prompts” to refresh them.</p>}
-                  {sel.prompts?.map((q, k) => (
-                    <div key={k} className="space-y-1">
-                      <div className="flex items-center gap-2 text-xs text-slate-400"><span className="flex-1">Picture {k + 1} of {sel.prompts!.length}</span><button className="rounded border border-slate-700 px-2.5 py-1 hover:bg-slate-800" onClick={() => void copyText(q, `Prompt ${k + 1}`)}>Copy</button></div>
-                      <textarea className={inp} rows={4} value={q} onChange={(e) => patch({ prompts: sel.prompts!.map((y, j) => (j === k ? e.target.value : y)) })} />
-                    </div>
-                  ))}
-                  <div className="flex gap-2">
-                    <button className={btn(true)} onClick={writeThis}>{sel.prompts?.length ? "Write prompts again" : "Write prompts"}</button>
-                    {!!sel.prompts?.length && <button className={btn()} onClick={() => void copyText(sel.prompts!.map((q, k) => `${k + 1}) ${q}`).join("\n"), "All prompts for this scene")}>Copy all</button>}
-                  </div>
-                </div>
                 <button className={btn()} disabled={busy} onClick={findPhoto}>Find and add more visuals</button>
                 <p className="text-xs text-slate-500">New visuals are added to the end of the list. Nothing you uploaded is replaced.</p>
                 <div className="space-y-1.5">
