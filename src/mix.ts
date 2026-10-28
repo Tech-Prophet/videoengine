@@ -6,7 +6,7 @@
 
 type Span = { at: number; len: number }; // one narrated sentence: start and length in seconds, relative to the start of its scene
 
-export const VOICE_RMS = 0.16; // about -16 dBFS; loudness every voiceover is brought to (root-mean-square of the speaking parts)
+export const VOICE_RMS = 0.24; // about -12 dBFS; loudness every voiceover is brought to (root-mean-square of the speaking parts)
 export const GAP_RATIO = 0.3; // music level in pauses, relative to the voice (about -10.5 dB)
 export const DUCK = 0.4; // extra music reduction while speaking (about -8 dB)
 export const MUSIC_ALONE_RMS = 0.14;
@@ -28,7 +28,7 @@ export function rmsAll(data: Float32Array): number {
 
 // The volume to give the voice and the music (both are multipliers on the files as they are).
 export function levels(voiceRms: number | null, musicRms: number | null) {
-  const voice = voiceRms && voiceRms > 0 ? clamp(VOICE_RMS / voiceRms, 0.5, 1.5) : 1;
+  const voice = voiceRms && voiceRms > 0 ? clamp(VOICE_RMS / voiceRms, 0.5, 2.5) : 1;
   const heard = voiceRms && voiceRms > 0 ? VOICE_RMS : 0; // loudness of the voice after the gain above (capped gain may fall short)
   const target = heard ? Math.min(VOICE_RMS, voiceRms! * voice) * GAP_RATIO : MUSIC_ALONE_RMS;
   const music = musicRms && musicRms > 0 ? clamp(target / musicRms, 0.02, 1.5) : 0.15;

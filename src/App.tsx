@@ -5,6 +5,7 @@ import type { MusicStyle } from "./music.ts";
 import { XFD, fillsFrame, moveFor, motionP, pose } from "./motion.ts";
 import type { Move } from "./motion.ts";
 import { drawCaption } from "./captions.ts";
+import { drawTitle } from "./title.ts";
 import { duckFactor, levels, rmsActive, rmsAll } from "./mix.ts";
 
 type Fmt = "long" | "short";
@@ -18,7 +19,7 @@ type Mark = { at: number; len: number; text: string }; // one narrated sentence:
 type Scene = Draft & { id: string; duration: number; palette: number; clips: Clip[]; marks?: Mark[] };
 type Meta = { title?: string; description?: string; tags?: string[]; thumb?: string; intro?: string };
 type Parsed = { meta: Meta; scenes: Draft[] };
-type Live = { scenes: Scene[]; starts: number[]; total: number; fit: Fit; caps: boolean; W: number; H: number; intro: string; voiceVol: number; musicVol: number; duck: boolean; lead: number; tail: number; outro: string };
+type Live = { scenes: Scene[]; starts: number[]; total: number; fit: Fit; caps: boolean; W: number; H: number; intro: string; voiceVol: number; musicVol: number; duck: boolean; lead: number; tail: number; outro: string; introColor: string; accent: string };
 
 const PALETTES = [["#1b1442", "#6d3df0"], ["#0b1f33", "#13a8c9"], ["#0f2a22", "#2fb67c"], ["#3a1212", "#e8643a"], ["#1d1d3a", "#d6458f"]];
 const FONT = "Inter, system-ui, sans-serif";
@@ -470,7 +471,7 @@ const borrowVisuals = (list: Scene[]): Scene[] =>
 const SAVE_KEY = "vortex-project";
 type Saved = {
   v: 1; fmt: Fmt; res: number; fps: number; wpm: number; topic: string; tone: string; minutes: number; minSec: number;
-  scriptText: string; intro: string; source: Source; moving: boolean; caps: boolean; fit?: Fit; musicStyle?: MusicStyle; autoMusic?: boolean; balance?: boolean; leadSec?: number; outro?: string;
+  scriptText: string; intro: string; source: Source; moving: boolean; caps: boolean; fit?: Fit; musicStyle?: MusicStyle; autoMusic?: boolean; balance?: boolean; leadSec?: number; outro?: string; introColor?: string; accent?: string;
   vTitle: string; vDesc: string; vTags: string; thumbText: string;
   scenes: Omit<Scene, "clips" | "marks">[];
 };
@@ -700,28 +701,14 @@ function drawFrame(ctx: CanvasRenderingContext2D, L: Live, i: number, tt: number
 
   ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillStyle = "#fff";
 
-  // Title: bold, large, slightly above centre, thin dark outline. With a music-only lead-in it shows while the music plays alone.
+  // Title: heavy capitals with a thick outline, centred, mixed colours (same look as the thumbnail).
   const introEnd = Math.min(L.lead > 0 ? L.lead + 1.8 : 5.5, L.scenes[0].duration - 0.3, L.total * 0.4);
   const introStart = L.lead > 0 ? 0.5 : 0.4;
-  if (L.intro && tt > introStart && tt < introEnd) {
-    ctx.globalAlpha = Math.max(0, Math.min(1, (tt - introStart) / 0.7, (introEnd - tt) / 0.6));
-    ctx.font = `700 ${54 * u}px ${FONT}`; // moderate size: about 5% of the frame height
-    ctx.lineJoin = "round"; ctx.lineWidth = 4 * u; ctx.strokeStyle = "rgba(0,0,0,.85)";
-    ctx.shadowColor = "rgba(0,0,0,.6)"; ctx.shadowBlur = 12 * u;
-    const lines = wrap(ctx, L.intro, w * 0.75), lh = 68 * u, y0 = h * 0.4 - ((lines.length - 1) * lh) / 2;
-    lines.forEach((l, k) => { ctx.strokeText(l, w / 2, y0 + k * lh); ctx.fillText(l, w / 2, y0 + k * lh); });
-    ctx.shadowBlur = 0; ctx.shadowColor = "transparent"; ctx.globalAlpha = 1;
-  }
+  if (L.intro && tt > introStart && tt < introEnd)
+    drawTitle(ctx, w, L.intro, { size: 195 * u, cy: h * 0.42, color: L.introColor, accent: L.accent, family: FONT, alpha: Math.max(0, Math.min(1, (tt - introStart) / 0.7, (introEnd - tt) / 0.6)) });
   // Ending message: typed by you, shown over the last seconds while the music rises and fades.
-  if (L.outro && L.tail > 0 && tt > L.total - L.tail + 0.3 && tt < L.total - 0.6) {
-    ctx.globalAlpha = Math.max(0, Math.min(1, (tt - (L.total - L.tail + 0.3)) / 0.7));
-    ctx.font = `700 ${50 * u}px ${FONT}`;
-    ctx.lineJoin = "round"; ctx.lineWidth = 5 * u; ctx.strokeStyle = "rgba(0,0,0,.85)";
-    ctx.shadowColor = "rgba(0,0,0,.6)"; ctx.shadowBlur = 16 * u;
-    const lines = wrap(ctx, L.outro, w * 0.8), lh = 80 * u, y0 = h * 0.45 - ((lines.length - 1) * lh) / 2;
-    lines.forEach((l, k) => { ctx.strokeText(l, w / 2, y0 + k * lh); ctx.fillText(l, w / 2, y0 + k * lh); });
-    ctx.shadowBlur = 0; ctx.shadowColor = "transparent"; ctx.globalAlpha = 1;
-  }
+  if (L.outro && L.tail > 0 && tt > L.total - L.tail + 0.3 && tt < L.total - 0.6)
+    drawTitle(ctx, w, L.outro, { size: 92 * u, cy: h * 0.45, color: L.introColor, accent: L.accent, family: FONT, alpha: Math.max(0, Math.min(1, (tt - (L.total - L.tail + 0.3)) / 0.7)) });
 
   if (L.caps && sc.text) {
     const cues = cuesOf(sc);
@@ -799,8 +786,9 @@ export default function App() {
   const [autoMusic, setAutoMusic] = useState(saved?.autoMusic ?? true); // Generate video adds a music track by itself
   const [leadSec, setLeadSec] = useState(saved?.leadSec ?? 4); // seconds of music alone before the voice and captions start
   const [outro, setOutro] = useState(saved?.outro ?? ""); // typed ending message, shown over the last seconds
-  const [leadUsed, setLeadUsed] = useState(0); // lead-in and ending actually built into the current timeline
-  const [tailUsed, setTailUsed] = useState(0);
+  const [introColor, setIntroColor] = useState(saved?.introColor ?? "#ffffff"); // title colours; *starred* words use the accent
+  const [accent, setAccent] = useState(saved?.accent ?? "#ffd400");
+  const [leadUsed, setLeadUsed] = useState(0); // music-only start actually built into the current voiceover
   const [balance, setBalance] = useState(saved?.balance ?? true); // level the voice and keep the music under it
   const [voiceRms, setVoiceRms] = useState<number | null>(null); // measured loudness of the voiceover and the music
   const [musicRms, setMusicRms] = useState<number | null>(null);
@@ -838,6 +826,7 @@ export default function App() {
   const capture = useRef<{ req: () => void; frames: number } | null>(null); // while rendering: pushes each drawn picture into the recording
   const acRef = useRef<AudioContext | null>(null);
   const tracks = useRef<Record<string, { el: HTMLAudioElement; gain: GainNode }>>({});
+  const master = useRef<DynamicsCompressorNode | null>(null);
   const clipGain = useRef<GainNode | null>(null);
   const clipNodes = useRef<Map<HTMLVideoElement, MediaElementAudioSourceNode>>(new Map());
 
@@ -852,8 +841,11 @@ export default function App() {
   const sel = scenes.find((s) => s.id === selId) ?? scenes[0];
   const starts = useMemo(() => scenes.reduce<number[]>((a, _s, i) => [...a, i ? a[i - 1] + scenes[i - 1].duration : 0], []), [scenes]);
   const total = scenes.reduce((a, s) => a + s.duration, 0);
-  const live = useRef<Live>({ scenes, starts, total, fit, caps, W: cw, H: ch, intro, voiceVol: voiceGain, musicVol: musicGain, duck: balance, lead: leadUsed, tail: tailUsed, outro });
-  live.current = { scenes, starts, total, fit, caps, W: cw, H: ch, intro, voiceVol: voiceGain, musicVol: musicGain, duck: balance, lead: leadUsed, tail: tailUsed, outro };
+  // The ending (typed message over a music swell and fade-out) is added after the last scene whenever the video is drawn or recorded.
+  const endExtra = scenes.length ? (outro.trim() ? 5 : 3) : 0;
+  const liveScenes = useMemo(() => (endExtra ? scenes.map((x, k) => (k === scenes.length - 1 ? { ...x, duration: x.duration + endExtra } : x)) : scenes), [scenes, endExtra]);
+  const live = useRef<Live>({ scenes: liveScenes, starts, total: total + endExtra, fit, caps, W: cw, H: ch, intro, voiceVol: voiceGain, musicVol: musicGain, duck: balance, lead: leadUsed, tail: endExtra, outro, introColor, accent });
+  live.current = { scenes: liveScenes, starts, total: total + endExtra, fit, caps, W: cw, H: ch, intro, voiceVol: voiceGain, musicVol: musicGain, duck: balance, lead: leadUsed, tail: endExtra, outro, introColor, accent };
 
   const totalWords = Math.round(minutes * wpm);
   const nScenes = fmt === "short" ? 4 : Math.max(6, Math.min(16, Math.round(minutes * 2)));
@@ -891,19 +883,28 @@ DELIVERY: voiceover
       return speech ? rmsActive(d) : rmsAll(d);
     } catch { return null; }
   };
+  // Everything audible goes through one soft limiter, so a louder voice can never distort or clip.
+  const getMaster = () => {
+    if (!master.current) {
+      const ac = ensureAc(), c = ac.createDynamicsCompressor();
+      c.threshold.value = -3; c.knee.value = 0; c.ratio.value = 20; c.attack.value = 0.003; c.release.value = 0.15;
+      c.connect(ac.destination); master.current = c;
+    }
+    return master.current;
+  };
   const track = (k: "music" | "voice") => {
     const ac = ensureAc();
     if (!tracks.current[k]) {
       const el = new Audio();
       const gain = ac.createGain();
       ac.createMediaElementSource(el).connect(gain);
-      gain.connect(ac.destination);
+      gain.connect(getMaster());
       tracks.current[k] = { el, gain };
     }
     return tracks.current[k];
   };
   const getClipGain = () => {
-    if (!clipGain.current) { const ac = ensureAc(); const g = ac.createGain(); g.connect(ac.destination); clipGain.current = g; }
+    if (!clipGain.current) { const ac = ensureAc(); const g = ac.createGain(); g.connect(getMaster()); clipGain.current = g; }
     return clipGain.current;
   };
   const syncAudio = (play: boolean) =>
@@ -928,14 +929,14 @@ DELIVERY: voiceover
     const id = window.setTimeout(() => {
       try {
         const data: Saved = {
-          v: 1, fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, vTitle, vDesc, vTags, thumbText,
+          v: 1, fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, vTitle, vDesc, vTags, thumbText,
           scenes: scenes.map((s) => ({ id: s.id, title: s.title, text: s.text, onScreen: s.onScreen, visual: s.visual, duration: s.duration, palette: s.palette })),
         };
         localStorage.setItem(SAVE_KEY, JSON.stringify(data));
       } catch { /* storage full or blocked: skip */ }
     }, 800);
     return () => clearTimeout(id);
-  }, [fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, vTitle, vDesc, vTags, thumbText, scenes]);
+  }, [fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, vTitle, vDesc, vTags, thumbText, scenes]);
   useEffect(() => {
     if (!code) { setServer(NO_PROVIDERS); setServerMsg(""); return undefined; }
     const ctl = new AbortController();
@@ -1337,9 +1338,6 @@ DELIVERY: voiceover
         setMsg(`Finished video is ${clock(len)}, shorter than the ${clock(minSec)} minimum.`);
         setStage(0); return;
       }
-      const tail = outro.trim() ? 5 : 3; // ending: typed message (or just a calm music fade-out) after the last word
-      next = next.map((x, k) => (k === next.length - 1 ? { ...x, duration: x.duration + tail } : x));
-      setTailUsed(tail);
       setStage(3);
       const withPics: Scene[] = [];
       aiSt.current = { fails: 0 };
@@ -1447,7 +1445,7 @@ DELIVERY: voiceover
     await ac.resume();
     if (hasAudio && live.current.scenes.some((s) => s.onCam)) getClipGain();
     const dest = hasAudio ? ac.createMediaStreamDestination() : null;
-    const outs = hasAudio ? [...Object.values(tracks.current).map((T) => T.gain), ...(clipGain.current ? [clipGain.current] : [])] : [];
+    const outs: AudioNode[] = hasAudio ? [getMaster()] : [];
     if (dest) outs.forEach((g) => g.connect(dest));
     for (let k = 0; k < 40 && c.width !== W; k++) await new Promise((r) => setTimeout(r, 50)); // wait until the canvas is full size (the preview is smaller)
     // Ask for a recorded picture exactly when one has been drawn (more reliable on phones than a timer: no frozen or repeated pictures).
@@ -1489,7 +1487,7 @@ DELIVERY: voiceover
       }
       const took = (performance.now() - began) / 1000;
       setFile({ url: URL.createObjectURL(blob), name: `vortex-${fmt}-${res}p.${type === "video/mp4" ? "mp4" : "webm"}`, mb: blob.size / 1e6, blob });
-      setExporting(false); setStage(5);
+      setExporting(false); setStage(5); setTab("publish"); // download and share are in the Publish tab
       const gotFps = drawn / Math.max(1, took);
       const slow = drawn > 0 && gotFps < fps * 0.6 ? ` Your phone only managed about ${Math.round(gotFps)} pictures a second at ${res}p, so motion may look choppy. Try 720p, or 30 fps, for smoother results.` : "";
       setMsg(`Recorded ${clock(took)} of ${clock(live.current.total)} planned.${slow}${hidden ? " The tab was hidden while rendering, so the video may be incomplete." : ""}${attempt > 0 ? " Saved without audio." : ""}`);
@@ -1547,8 +1545,6 @@ DELIVERY: voiceover
         <span className="text-xs sm:text-sm text-slate-400 hidden md:inline">{W}×{H} · {clock(total)}</span>
         <div className="ml-auto flex items-center gap-2 sm:gap-3">
           {msg && <span className="basis-full text-xs text-amber-300 sm:basis-auto sm:max-w-xs sm:truncate sm:text-slate-400" title={msg}>{msg}</span>}
-          {file && <button onClick={() => void shareVideo()} className={`${btn()} text-xs sm:text-sm`}>Share</button>}
-          {file && <a href={file.url} download={file.name} className={`${btn(true)} text-xs sm:text-sm`}>Download {file.name.split(".").pop()?.toUpperCase()} {file.mb.toFixed(1)} MB</a>}
           <button onClick={() => void exportVideo()} disabled={exporting || busy} className={`${btn()} text-xs sm:text-sm`}>{exporting ? `Rendering ${Math.round((t / (total || 1)) * 100)}%` : "Re-render"}</button>
         </div>
       </header>
@@ -1633,7 +1629,12 @@ DELIVERY: voiceover
 
             {tab === "scenes" && (<>
               <Field l="Intro text (first seconds)"><input className={inp} value={intro} onChange={(e) => setIntro(e.target.value)} placeholder="Opening intro text" /></Field>
-              <Field l="Ending message (last seconds)"><input className={inp} value={outro} onChange={(e) => setOutro(e.target.value)} placeholder="e.g. Subscribe for more true stories" /></Field>
+              <Field l="Ending message (last seconds)"><input className={inp} value={outro} onChange={(e) => setOutro(e.target.value)} placeholder="e.g. SUBSCRIBE for *more stories*" /></Field>
+              <div className="flex items-center gap-3 text-xs text-slate-400">
+                <label className="flex items-center gap-1.5">Text colour <input type="color" value={introColor} onChange={(e) => setIntroColor(e.target.value)} className="h-7 w-9 rounded border border-slate-700 bg-transparent" /></label>
+                <label className="flex items-center gap-1.5">Accent colour <input type="color" value={accent} onChange={(e) => setAccent(e.target.value)} className="h-7 w-9 rounded border border-slate-700 bg-transparent" /></label>
+              </div>
+              <p className="text-xs text-slate-500">Keep titles short (2 to 4 words). They are shown in capitals. Put stars around words to colour them: THE *BEE*. With no stars, the last word gets the accent colour.</p>
               <div className="space-y-1.5">
                 {scenes.map((s, i) => (
                   <div key={s.id} onClick={() => { setSelId(s.id); seek(starts[i]); }} className={`flex cursor-pointer items-center gap-2 rounded-md border px-2.5 py-2 text-sm ${s.id === sel?.id ? "border-violet-500 bg-slate-900" : "border-slate-800 hover:bg-slate-900"}`}>
@@ -1687,7 +1688,7 @@ DELIVERY: voiceover
               <div className="flex gap-2"><button className={btn()} onClick={previewVoice}>Preview</button><button className={btn()} onClick={() => speechSynthesis.cancel()}>Stop</button></div>
               <Field l="Upload custom voiceover"><input type="file" accept="audio/*" className="text-xs" onChange={(e) => e.target.files?.[0] && setVoiceUrl(URL.createObjectURL(e.target.files[0]))} /></Field>
               {voiceUrl && (<>
-                <Field l={`Voice volume: ${Math.round(voiceVol * 100)}%`}><input type="range" min={0} max={1.5} step={0.05} value={voiceVol} onChange={(e) => setVoiceVol(+e.target.value)} className="w-full accent-violet-500" /></Field>
+                <Field l={`Voiceover volume: ${Math.round(voiceVol * 100)}% (100% is already loud and clear; a limiter prevents distortion)`}><input type="range" min={0} max={2} step={0.05} value={voiceVol} onChange={(e) => setVoiceVol(+e.target.value)} className="w-full accent-violet-500" /></Field>
                 <button className={btn()} disabled={!voiceDur} onClick={fitVoice}>Fit scenes to voiceover</button>
               </>)}
               <h3 className="border-t border-slate-800 pt-4 text-sm font-semibold">Background music</h3>
@@ -1726,7 +1727,8 @@ DELIVERY: voiceover
               <button className={btn()} onClick={() => void downloadThumb()}>Download thumbnail</button>
               <div className="space-y-2 border-t border-slate-800 pt-4">
                 <h3 className="text-sm font-semibold">Share</h3>
-                <button className={`${btn(true)} w-full`} disabled={!file} onClick={() => void shareVideo()}>{file ? `Share video (${file.name.split(".").pop()?.toUpperCase()}, ${file.mb.toFixed(1)} MB)` : "Share video (render it first)"}</button>
+                {file ? <a href={file.url} download={file.name} className={`${btn(true)} block w-full text-center`}>Download {file.name.split(".").pop()?.toUpperCase()} video ({file.mb.toFixed(1)} MB)</a> : <button className={`${btn(true)} w-full`} disabled>Download video (render it first)</button>}
+                <button className={`${btn()} w-full`} disabled={!file} onClick={() => void shareVideo()}>{file ? `Share video (${file.name.split(".").pop()?.toUpperCase()}, ${file.mb.toFixed(1)} MB)` : "Share video (render it first)"}</button>
                 <button className={`${btn()} w-full`} disabled={!shareText} onClick={() => void copyShareText()}>Copy title and description</button>
                 <p className="text-xs text-slate-500">Opens your phone's share menu so you can send the video to WhatsApp, Telegram, Google Drive and more. Only the video file is sent, not the title or description (use the copy button for those). It goes straight from this device to the app you pick; this app does not upload or host it. Desktop browsers often cannot share files, so use Download there.</p>
               </div>
