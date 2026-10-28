@@ -705,17 +705,17 @@ function drawFrame(ctx: CanvasRenderingContext2D, L: Live, i: number, tt: number
   const introStart = L.lead > 0 ? 0.5 : 0.4;
   if (L.intro && tt > introStart && tt < introEnd) {
     ctx.globalAlpha = Math.max(0, Math.min(1, (tt - introStart) / 0.7, (introEnd - tt) / 0.6));
-    ctx.font = `800 ${74 * u}px ${FONT}`;
-    ctx.lineJoin = "round"; ctx.lineWidth = 5 * u; ctx.strokeStyle = "rgba(0,0,0,.85)";
-    ctx.shadowColor = "rgba(0,0,0,.6)"; ctx.shadowBlur = 16 * u;
-    const lines = wrap(ctx, L.intro, w * 0.8), lh = 90 * u, y0 = h * 0.4 - ((lines.length - 1) * lh) / 2;
+    ctx.font = `700 ${54 * u}px ${FONT}`; // moderate size: about 5% of the frame height
+    ctx.lineJoin = "round"; ctx.lineWidth = 4 * u; ctx.strokeStyle = "rgba(0,0,0,.85)";
+    ctx.shadowColor = "rgba(0,0,0,.6)"; ctx.shadowBlur = 12 * u;
+    const lines = wrap(ctx, L.intro, w * 0.75), lh = 68 * u, y0 = h * 0.4 - ((lines.length - 1) * lh) / 2;
     lines.forEach((l, k) => { ctx.strokeText(l, w / 2, y0 + k * lh); ctx.fillText(l, w / 2, y0 + k * lh); });
     ctx.shadowBlur = 0; ctx.shadowColor = "transparent"; ctx.globalAlpha = 1;
   }
   // Ending message: typed by you, shown over the last seconds while the music rises and fades.
   if (L.outro && L.tail > 0 && tt > L.total - L.tail + 0.3 && tt < L.total - 0.6) {
     ctx.globalAlpha = Math.max(0, Math.min(1, (tt - (L.total - L.tail + 0.3)) / 0.7));
-    ctx.font = `800 ${64 * u}px ${FONT}`;
+    ctx.font = `700 ${50 * u}px ${FONT}`;
     ctx.lineJoin = "round"; ctx.lineWidth = 5 * u; ctx.strokeStyle = "rgba(0,0,0,.85)";
     ctx.shadowColor = "rgba(0,0,0,.6)"; ctx.shadowBlur = 16 * u;
     const lines = wrap(ctx, L.outro, w * 0.8), lh = 80 * u, y0 = h * 0.45 - ((lines.length - 1) * lh) / 2;
@@ -728,7 +728,7 @@ function drawFrame(ctx: CanvasRenderingContext2D, L: Live, i: number, tt: number
     let ci = 0;
     cues.forEach((c, k) => { if (local >= c.t0 - 0.05) ci = k; });
     const cue = cues[ci];
-    if (cue && local <= cue.t1 + 0.5) {
+    if (cue && local >= cue.t0 - 0.05 && local <= cue.t1 + 0.5) { // never before the voice says it: no caption during the music-only start
       const nCh = Math.max(1, Math.ceil(cue.ws.length / 7)), size = Math.ceil(cue.ws.length / nCh);
       const pr = Math.max(0, Math.min(0.999, (local - cue.t0) / Math.max(0.2, cue.t1 - cue.t0)));
       const idx = Math.min(nCh - 1, Math.floor(pr * nCh));
