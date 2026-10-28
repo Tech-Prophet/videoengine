@@ -818,6 +818,7 @@ export default function App() {
   const playingRef = useRef(false);
   const onEnd = useRef<(() => void) | null>(null);
   const exportStart = useRef<number | null>(null);
+  const capture = useRef<{ req: () => void; frames: number } | null>(null); // while rendering: pushes each drawn picture into the recording
   const acRef = useRef<AudioContext | null>(null);
   const tracks = useRef<Record<string, { el: HTMLAudioElement; gain: GainNode }>>({});
   const clipGain = useRef<GainNode | null>(null);
@@ -1014,7 +1015,7 @@ DELIVERY: voiceover
       }
       const ctx = canvasRef.current?.getContext("2d");
       // While previewing, 30 pictures a second is plenty. Rendering draws every tick.
-      if (ctx && !(exportStart.current === null && playingRef.current && now - lastDraw < 30)) { lastDraw = now; drawFrame(ctx, L, i, tt, getMedia); }
+      if (ctx && !(exportStart.current === null && playingRef.current && now - lastDraw < 30)) { lastDraw = now; drawFrame(ctx, L, i, tt, getMedia); const cap = capture.current; if (cap) { cap.req(); cap.frames++; } }
     };
     let worker: Worker | null = null, timer = 0;
     try {
@@ -1418,7 +1419,11 @@ DELIVERY: voiceover
     const outs = hasAudio ? [...Object.values(tracks.current).map((T) => T.gain), ...(clipGain.current ? [clipGain.current] : [])] : [];
     if (dest) outs.forEach((g) => g.connect(dest));
     for (let k = 0; k < 40 && c.width !== W; k++) await new Promise((r) => setTimeout(r, 50)); // wait until the canvas is full size (the preview is smaller)
-    const stream = c.captureStream(fps);
+    // Ask for a recorded picture exactly when one has been drawn (more reliable on phones than a timer: no frozen or repeated pictures).
+    const stream = c.captureStream(0);
+    const vtrack = stream.getVideoTracks()[0] as (MediaStreamTrack & { requestFrame?: () => void }) | undefined;
+    if (!vtrack?.requestFrame) { stream.getTracks().forEach((t) => stream.removeTrack(t)); stream.addTrack(c.captureStream(fps).getVideoTracks()[0]); }
+    capture.current = vtrack?.requestFrame ? { req: () => vtrack.requestFrame!(), frames: 0 } : null;
     if (dest) dest.stream.getAudioTracks().forEach((a) => stream.addTrack(a));
     const opts: MediaRecorderOptions = { videoBitsPerSecond: res >= 1440 ? 12e6 : res >= 1080 ? 6e6 : 3e6 };
     if (mime) opts.mimeType = mime;
@@ -1436,6 +1441,7 @@ DELIVERY: voiceover
       clearTimeout(safety);
       document.removeEventListener("visibilitychange", onVis);
       exportStart.current = null;
+      const drawn = capture.current?.frames ?? 0; capture.current = null;
       if (dest) outs.forEach((g) => { try { g.disconnect(dest); } catch { /* ignore */ } });
       const type = (mime ?? (r.mimeType || "video/webm")).split(";")[0];
       const blob = new Blob(chunks, { type });
@@ -1453,7 +1459,9 @@ DELIVERY: voiceover
       const took = (performance.now() - began) / 1000;
       setFile({ url: URL.createObjectURL(blob), name: `vortex-${fmt}-${res}p.${type === "video/mp4" ? "mp4" : "webm"}`, mb: blob.size / 1e6, blob });
       setExporting(false); setStage(5);
-      setMsg(`Recorded ${clock(took)} of ${clock(live.current.total)} planned.${hidden ? " The tab was hidden while rendering, so the video may be incomplete." : ""}${attempt > 0 ? " Saved without audio." : ""}`);
+      const gotFps = drawn / Math.max(1, took);
+      const slow = drawn > 0 && gotFps < fps * 0.6 ? ` Your phone only managed about ${Math.round(gotFps)} pictures a second at ${res}p, so motion may look choppy. Try 720p, or 30 fps, for smoother results.` : "";
+      setMsg(`Recorded ${clock(took)} of ${clock(live.current.total)} planned.${slow}${hidden ? " The tab was hidden while rendering, so the video may be incomplete." : ""}${attempt > 0 ? " Saved without audio." : ""}`);
     };
     onEnd.current = () => { onEnd.current = null; setTimeout(() => { if (r.state !== "inactive") r.stop(); }, 400); };
     const vEl = tracks.current.voice?.el;
