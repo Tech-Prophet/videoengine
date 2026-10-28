@@ -19,7 +19,7 @@ type Mark = { at: number; len: number; text: string }; // one narrated sentence:
 type Scene = Draft & { id: string; duration: number; palette: number; clips: Clip[]; marks?: Mark[] };
 type Meta = { title?: string; description?: string; tags?: string[]; thumb?: string; intro?: string };
 type Parsed = { meta: Meta; scenes: Draft[] };
-type Live = { scenes: Scene[]; starts: number[]; total: number; fit: Fit; caps: boolean; W: number; H: number; intro: string; voiceVol: number; musicVol: number; duck: boolean; lead: number; tail: number; outro: string; introColor: string; accent: string };
+type Live = { scenes: Scene[]; starts: number[]; total: number; fit: Fit; caps: boolean; W: number; H: number; intro: string; voiceVol: number; musicVol: number; duck: boolean; lead: number; tail: number; outro: string; introColor: string; accent: string; fps: number };
 
 const PALETTES = [["#1b1442", "#6d3df0"], ["#0b1f33", "#13a8c9"], ["#0f2a22", "#2fb67c"], ["#3a1212", "#e8643a"], ["#1d1d3a", "#d6458f"]];
 const FONT = "Inter, system-ui, sans-serif";
@@ -743,7 +743,7 @@ const STEPS = ["Read script", "Voiceover and music", "Find visuals", "Render vid
 export default function App() {
   const [saved] = useState(loadSaved);
   const [fmt, setFmt] = useState<Fmt>(saved?.fmt ?? "long");
-  const [res, setRes] = useState(saved?.res ?? 1080);
+  const [res, setRes] = useState(saved?.res ?? (typeof window !== "undefined" && window.innerWidth < 768 ? 720 : 1080)); // phones start at 720p: much lighter to render
   const [fps, setFps] = useState(saved?.fps ?? 30);
   const [wpm, setWpm] = useState(saved?.wpm ?? 150);
   const [tab, setTab] = useState<Tab>("create");
@@ -827,6 +827,8 @@ export default function App() {
   const acRef = useRef<AudioContext | null>(null);
   const tracks = useRef<Record<string, { el: HTMLAudioElement; gain: GainNode }>>({});
   const master = useRef<DynamicsCompressorNode | null>(null);
+  const sideScroll = useRef<HTMLDivElement | null>(null);
+  const dropFile = () => setFile((o) => { if (o) URL.revokeObjectURL(o.url); return null; }); // free the old video's memory
   const clipGain = useRef<GainNode | null>(null);
   const clipNodes = useRef<Map<HTMLVideoElement, MediaElementAudioSourceNode>>(new Map());
 
@@ -843,9 +845,10 @@ export default function App() {
   const total = scenes.reduce((a, s) => a + s.duration, 0);
   // The ending (typed message over a music swell and fade-out) is added after the last scene whenever the video is drawn or recorded.
   const endExtra = scenes.length ? (outro.trim() ? 5 : 3) : 0;
+  const fullTotal = total + endExtra;
   const liveScenes = useMemo(() => (endExtra ? scenes.map((x, k) => (k === scenes.length - 1 ? { ...x, duration: x.duration + endExtra } : x)) : scenes), [scenes, endExtra]);
-  const live = useRef<Live>({ scenes: liveScenes, starts, total: total + endExtra, fit, caps, W: cw, H: ch, intro, voiceVol: voiceGain, musicVol: musicGain, duck: balance, lead: leadUsed, tail: endExtra, outro, introColor, accent });
-  live.current = { scenes: liveScenes, starts, total: total + endExtra, fit, caps, W: cw, H: ch, intro, voiceVol: voiceGain, musicVol: musicGain, duck: balance, lead: leadUsed, tail: endExtra, outro, introColor, accent };
+  const live = useRef<Live>({ scenes: liveScenes, starts, total: total + endExtra, fit, caps, W: cw, H: ch, intro, voiceVol: voiceGain, musicVol: musicGain, duck: balance, lead: leadUsed, tail: endExtra, outro, introColor, accent, fps });
+  live.current = { scenes: liveScenes, starts, total: total + endExtra, fit, caps, W: cw, H: ch, intro, voiceVol: voiceGain, musicVol: musicGain, duck: balance, lead: leadUsed, tail: endExtra, outro, introColor, accent, fps };
 
   const totalWords = Math.round(minutes * wpm);
   const nScenes = fmt === "short" ? 4 : Math.max(6, Math.min(16, Math.round(minutes * 2)));
@@ -874,7 +877,18 @@ DELIVERY: voiceover
 
 (continue until Scene ${nScenes}. Use "DELIVERY: on-camera" only for a scene where a real person must speak straight to the viewer. Otherwise always use "DELIVERY: voiceover".)`;
 
-  const ensureAc = () => { if (!acRef.current) acRef.current = new AudioContext(); return acRef.current; };
+  const ensureAc = () => {
+    if (!acRef.current) {
+      // 24 kHz is plenty for speech and our music, and halves the memory and work of every audio step.
+      try { acRef.current = new AudioContext({ sampleRate: 24000 }); } catch { acRef.current = new AudioContext(); }
+    }
+    return acRef.current;
+  };
+  const skipMeasure = useRef({ voice: false, music: false }); // audio we just made: its loudness is already known
+  const setGeneratedMusic = (data: Float32Array, sr: number) => {
+    skipMeasure.current.music = true; setMusicRms(rmsAll(data));
+    setMusicUrl(URL.createObjectURL(toWav(data, sr)));
+  };
   // Loudness of an audio file (speech: only the speaking parts count), used to balance the voice and the music.
   const measure = async (url: string, speech: boolean) => {
     try {
@@ -990,7 +1004,7 @@ DELIVERY: voiceover
           else tRef.current += dt;
         }
         if (tRef.current >= L.total) { tRef.current = L.total; setT(L.total); pause(); onEnd.current?.(); }
-        else if (now - lastUi > 200) { lastUi = now; setT(tRef.current); }
+        else if (now - lastUi > (exportStart.current !== null ? 1000 : 200)) { lastUi = now; setT(tRef.current); } // while rendering the screen updates once a second
       }
       // Nothing is playing and nothing changed: do not redraw the picture 60 times a second (this is what made taps lag).
       // A slow redraw every 0.4 s still catches pictures that finish loading.
@@ -1034,8 +1048,9 @@ DELIVERY: voiceover
         if (mt && Math.abs(mt.gain.gain.value - mTarget) > 0.001) mt.gain.gain.setTargetAtTime(mTarget, ac.currentTime, mTarget < mt.gain.gain.value ? 0.08 : 0.5);
       }
       const ctx = canvasRef.current?.getContext("2d");
-      // While previewing, 30 pictures a second is plenty. Rendering draws every tick.
-      if (ctx && !(exportStart.current === null && playingRef.current && now - lastDraw < 30)) { lastDraw = now; drawFrame(ctx, L, i, tt, getMedia); const cap = capture.current; if (cap) { cap.req(); cap.frames++; } }
+      // Preview: 30 pictures a second. Rendering: exactly as many as the video's frame rate (drawing more is wasted work).
+      const gap = capture.current ? 1000 / L.fps - 4 : playingRef.current ? 30 : 0;
+      if (ctx && !(gap && now - lastDraw < gap)) { lastDraw = now; drawFrame(ctx, L, i, tt, getMedia); const cap = capture.current; if (cap) { cap.req(); cap.frames++; } }
     };
     let worker: Worker | null = null, timer = 0;
     try {
@@ -1053,12 +1068,12 @@ DELIVERY: voiceover
       setMusicRms(null);
       return;
     }
-    void measure(musicUrl, false).then(setMusicRms);
+    if (skipMeasure.current.music) skipMeasure.current.music = false; else void measure(musicUrl, false).then(setMusicRms);
     const T = track("music"); T.el.src = musicUrl; T.el.loop = true;
   }, [musicUrl]);
   useEffect(() => {
     if (!voiceUrl) { setVoiceRms(null); return; }
-    void measure(voiceUrl, true).then(setVoiceRms);
+    if (skipMeasure.current.voice) skipMeasure.current.voice = false; else void measure(voiceUrl, true).then(setVoiceRms);
     const el = track("voice").el;
     el.src = voiceUrl;
     el.onloadedmetadata = () => {
@@ -1222,7 +1237,7 @@ DELIVERY: voiceover
     await new Promise((r) => setTimeout(r, 50)); // lets the message show before the work starts
     try {
       const sr = 22050;
-      setMusicUrl(URL.createObjectURL(toWav(makeMusic(musicStyle, sr), sr)));
+      setGeneratedMusic(makeMusic(musicStyle, sr), sr);
       setMsg("Background music added. It loops under the whole video. Set its volume below.");
     } catch { setMsg("Could not make the music on this device."); }
     setMakingMusic(false);
@@ -1305,12 +1320,13 @@ DELIVERY: voiceover
     const out = new Float32Array(parts.reduce((a, p) => a + Math.round(p.dur * sr), 0));
     let at = 0;
     parts.forEach((p) => { if (p.data) out.set(p.data.subarray(0, Math.min(p.data.length, out.length - at)), at); at += Math.round(p.dur * sr); });
+    skipMeasure.current.voice = true; setVoiceRms(rmsActive(out));
     setVoiceUrl(URL.createObjectURL(toWav(out, sr)));
     return list.map((s, i) => ({ ...s, duration: parts[i].dur, marks: parts[i].marks }));
   };
 
   const generateVideo = async () => {
-    setBusy(true); setFile(null); setMsg(""); setStage(1); setThumbClip(""); setThumbBump(0);
+    setBusy(true); dropFile(); setMsg(""); setStage(1); setThumbClip(""); setThumbBump(0);
     try {
       const r = loadScript();
       if (!r) { setStage(0); return; }
@@ -1325,7 +1341,7 @@ DELIVERY: voiceover
       if (autoMusic && !musicUrl) {
         setMsg("Making background music…");
         await new Promise((res) => setTimeout(res, 50));
-        try { const sr = 22050; setMusicUrl(URL.createObjectURL(toWav(makeMusic(musicStyle, sr), sr))); note += " Background music added."; }
+        try { const sr = 22050; setGeneratedMusic(makeMusic(musicStyle, sr), sr); note += " Background music added."; }
         catch { note += " Could not make background music on this device."; }
       }
       if (!keys.voice && !voiceUrl) note += " No voiceover was added because the server voice is not connected (enter the access code under Server access).";
@@ -1428,7 +1444,7 @@ DELIVERY: voiceover
       ? MIME_CANDIDATES.map((m) => (hasAudio ? m : m.replace(/,(?:opus|aac|mp4a[^,]*)$/, ""))).find((m) => MediaRecorder.isTypeSupported(m))
       : undefined;
     if (attempt === 0 && !mime) { setMsg("This browser can't record video. Use desktop Chrome or Edge."); return; }
-    pause(); setFile(null); setExporting(true); setStage(4);
+    pause(); dropFile(); setExporting(true); setStage(4);
     Object.values(mediaRef.current).forEach((el) => {
       if (el instanceof HTMLVideoElement && el.readyState < 2) { el.preload = "auto"; el.load(); el.play().then(() => el.pause()).catch(() => {}); }
     });
@@ -1454,7 +1470,7 @@ DELIVERY: voiceover
     if (!vtrack?.requestFrame) { stream.getTracks().forEach((t) => stream.removeTrack(t)); stream.addTrack(c.captureStream(fps).getVideoTracks()[0]); }
     capture.current = vtrack?.requestFrame ? { req: () => vtrack.requestFrame!(), frames: 0 } : null;
     if (dest) dest.stream.getAudioTracks().forEach((a) => stream.addTrack(a));
-    const opts: MediaRecorderOptions = { videoBitsPerSecond: res >= 1440 ? 12e6 : res >= 1080 ? 6e6 : 3e6 };
+    const opts: MediaRecorderOptions = { videoBitsPerSecond: res >= 1440 ? 9e6 : res >= 1080 ? 5e6 : 2.5e6 }; // lighter files: a phone can save and share them
     if (mime) opts.mimeType = mime;
     const r = new MediaRecorder(stream, opts);
     const chunks: Blob[] = [];
@@ -1486,8 +1502,14 @@ DELIVERY: voiceover
         return;
       }
       const took = (performance.now() - began) / 1000;
-      setFile({ url: URL.createObjectURL(blob), name: `vortex-${fmt}-${res}p.${type === "video/mp4" ? "mp4" : "webm"}`, mb: blob.size / 1e6, blob });
-      setExporting(false); setStage(5); setTab("publish"); // download and share are in the Publish tab
+      chunks.length = 0; // the recording now lives in one file; let go of the pieces
+      let url = "";
+      try { url = URL.createObjectURL(blob); } catch { /* reported below */ }
+      if (!url) { setExporting(false); setStage(0); setMsg("The video was recorded but this phone ran out of memory saving it. Try 720p, a shorter script, or close other apps."); return; }
+      setFile((old) => { if (old) URL.revokeObjectURL(old.url); return { url, name: `vortex-${fmt}-${res}p.${type === "video/mp4" ? "mp4" : "webm"}`, mb: blob.size / 1e6, blob }; });
+      setExporting(false); setStage(5);
+      setTab("publish"); // download and share are in the Publish tab
+      window.setTimeout(() => { setTab("publish"); sideScroll.current?.scrollTo({ top: 0 }); }, 50); // and make sure they are in view
       const gotFps = drawn / Math.max(1, took);
       const slow = drawn > 0 && gotFps < fps * 0.6 ? ` Your phone only managed about ${Math.round(gotFps)} pictures a second at ${res}p, so motion may look choppy. Try 720p, or 30 fps, for smoother results.` : "";
       setMsg(`Recorded ${clock(took)} of ${clock(live.current.total)} planned.${slow}${hidden ? " The tab was hidden while rendering, so the video may be incomplete." : ""}${attempt > 0 ? " Saved without audio." : ""}`);
@@ -1542,10 +1564,10 @@ DELIVERY: voiceover
         <select className={`${inp} !w-auto text-xs sm:text-sm hidden sm:block`} value={fps} onChange={(e) => setFps(+e.target.value)}>
           <option value={30}>30 fps</option><option value={60}>60 fps</option>
         </select>
-        <span className="text-xs sm:text-sm text-slate-400 hidden md:inline">{W}×{H} · {clock(total)}</span>
+        <span className="text-xs sm:text-sm text-slate-400 hidden md:inline">{W}×{H} · {clock(fullTotal)}</span>
         <div className="ml-auto flex items-center gap-2 sm:gap-3">
           {msg && <span className="basis-full text-xs text-amber-300 sm:basis-auto sm:max-w-xs sm:truncate sm:text-slate-400" title={msg}>{msg}</span>}
-          <button onClick={() => void exportVideo()} disabled={exporting || busy} className={`${btn()} text-xs sm:text-sm`}>{exporting ? `Rendering ${Math.round((t / (total || 1)) * 100)}%` : "Re-render"}</button>
+          <button onClick={() => void exportVideo()} disabled={exporting || busy} className={`${btn()} text-xs sm:text-sm`}>{exporting ? (t >= fullTotal - 0.5 ? "Finishing…" : `Rendering ${Math.min(99, Math.floor((t / (fullTotal || 1)) * 100))}%`) : "Re-render"}</button>
         </div>
       </header>
 
@@ -1553,10 +1575,10 @@ DELIVERY: voiceover
         <aside className="vtx-side flex w-full lg:w-[400px] shrink-0 flex-col border-r border-b lg:border-b-0 border-slate-800 bg-slate-950 max-h-[45dvh] lg:max-h-none overflow-y-auto">
           <nav className="flex border-b border-slate-800 overflow-x-auto">
             {tabs.map(([k, l]) => (
-              <button key={k} onClick={() => setTab(k)} className={`flex-1 min-w-[70px] py-2.5 text-xs sm:text-sm whitespace-nowrap ${tab === k ? "border-b-2 border-violet-500 text-white" : "text-slate-400 hover:text-slate-200"}`}>{l}</button>
+              <button key={k} onClick={() => { setTab(k); sideScroll.current?.scrollTo({ top: 0 }); }} className={`flex-1 min-w-[70px] py-2.5 text-xs sm:text-sm whitespace-nowrap ${tab === k ? "border-b-2 border-violet-500 text-white" : "text-slate-400 hover:text-slate-200"}`}>{l}</button>
             ))}
           </nav>
-          <div className="vtx-side-inner min-h-0 flex-1 space-y-4 overflow-y-auto p-3 sm:p-4">
+          <div ref={sideScroll} className="vtx-side-inner min-h-0 flex-1 space-y-4 overflow-y-auto p-3 sm:p-4">
             {tab === "create" && (<>
               <Field l="Video topic or title"><input className={inp} value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="e.g. 5 habits for productivity" /></Field>
 
@@ -1727,7 +1749,10 @@ DELIVERY: voiceover
               <button className={btn()} onClick={() => void downloadThumb()}>Download thumbnail</button>
               <div className="space-y-2 border-t border-slate-800 pt-4">
                 <h3 className="text-sm font-semibold">Share</h3>
-                {file ? <a href={file.url} download={file.name} className={`${btn(true)} block w-full text-center`}>Download {file.name.split(".").pop()?.toUpperCase()} video ({file.mb.toFixed(1)} MB)</a> : <button className={`${btn(true)} w-full`} disabled>Download video (render it first)</button>}
+                {file ? <>
+                  <a href={file.url} download={file.name} className={`${btn(true)} block w-full text-center`}>Download {file.name.split(".").pop()?.toUpperCase()} video ({file.mb.toFixed(1)} MB)</a>
+                  <a href={file.url} target="_blank" rel="noreferrer" className="block text-center text-xs text-violet-300 underline">Download not starting? Open the video, then use the ⋮ menu → Download</a>
+                </> : <button className={`${btn(true)} w-full`} disabled>Download video (render it first)</button>}
                 <button className={`${btn()} w-full`} disabled={!file} onClick={() => void shareVideo()}>{file ? `Share video (${file.name.split(".").pop()?.toUpperCase()}, ${file.mb.toFixed(1)} MB)` : "Share video (render it first)"}</button>
                 <button className={`${btn()} w-full`} disabled={!shareText} onClick={() => void copyShareText()}>Copy title and description</button>
                 <p className="text-xs text-slate-500">Opens your phone's share menu so you can send the video to WhatsApp, Telegram, Google Drive and more. Only the video file is sent, not the title or description (use the copy button for those). It goes straight from this device to the app you pick; this app does not upload or host it. Desktop browsers often cannot share files, so use Download there.</p>
@@ -1750,17 +1775,17 @@ DELIVERY: voiceover
             <div className="flex flex-wrap items-center gap-2 sm:gap-3">
               <button className={btn(true)} onClick={playing ? pause : play}>{playing ? "Pause" : "Play"}</button>
               <button className={btn()} onClick={() => { pause(); seek(0); }}>Restart</button>
-              <span className="w-24 text-xs sm:text-sm tabular-nums text-slate-300">{clock(t)} / {clock(total)}</span>
+              <span className="w-24 text-xs sm:text-sm tabular-nums text-slate-300">{clock(Math.min(t, fullTotal))} / {clock(fullTotal)}</span>
               <label className="ml-auto flex items-center gap-1.5 text-xs text-slate-400"><input type="checkbox" checked={caps} onChange={(e) => setCaps(e.target.checked)} />Captions</label>
               {fmt === "short" && <label className="flex items-center gap-1.5 text-xs text-slate-400"><input type="checkbox" checked={safe} onChange={(e) => setSafe(e.target.checked)} />Safe zone</label>}
             </div>
-            <div className="relative cursor-pointer" onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); seek(((e.clientX - r.left) / r.width) * total); }}>
+            <div className="relative cursor-pointer" onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); seek(((e.clientX - r.left) / r.width) * fullTotal); }}>
               <div className="flex h-10 sm:h-12 gap-0.5 overflow-hidden rounded">
-                {scenes.map((s) => (
-                  <div key={s.id} onClick={() => setSelId(s.id)} title={s.title} style={{ flex: s.duration, background: `linear-gradient(135deg,${PALETTES[s.palette][0]},${PALETTES[s.palette][1]})` }} className={`truncate px-2 py-1 text-xs ${s.id === sel?.id ? "ring-2 ring-inset ring-white" : ""}`}>{s.title}</div>
+                {scenes.map((s, k) => (
+                  <div key={s.id} onClick={() => setSelId(s.id)} title={s.title} style={{ flex: s.duration + (k === scenes.length - 1 ? endExtra : 0), background: `linear-gradient(135deg,${PALETTES[s.palette][0]},${PALETTES[s.palette][1]})` }} className={`truncate px-2 py-1 text-xs ${s.id === sel?.id ? "ring-2 ring-inset ring-white" : ""}`}>{s.title}</div>
                 ))}
               </div>
-              <div className="pointer-events-none absolute top-0 h-10 sm:h-12 w-0.5 bg-white" style={{ left: `${total ? (t / total) * 100 : 0}%` }} />
+              <div className="pointer-events-none absolute top-0 h-10 sm:h-12 w-0.5 bg-white" style={{ left: `${fullTotal ? (Math.min(t, fullTotal) / fullTotal) * 100 : 0}%` }} />
             </div>
           </div>
         </main>
