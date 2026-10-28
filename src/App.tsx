@@ -702,7 +702,7 @@ function drawFrame(ctx: CanvasRenderingContext2D, L: Live, i: number, tt: number
   ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillStyle = "#fff";
 
   // Title: heavy capitals with a thick outline, centred, mixed colours (same look as the thumbnail).
-  const introEnd = Math.min(L.lead > 0 ? L.lead + 1.8 : 5.5, L.scenes[0].duration - 0.3, L.total * 0.4);
+  const introEnd = Math.min(L.lead > 0 ? L.lead + 0.5 : 5.5, L.scenes[0].duration - 0.3, L.total * 0.4);
   const introStart = L.lead > 0 ? 0.5 : 0.4;
   if (L.intro && tt > introStart && tt < introEnd)
     drawTitle(ctx, w, L.intro, { size: 195 * u, cy: h * 0.42, color: L.introColor, accent: L.accent, family: FONT, alpha: Math.max(0, Math.min(1, (tt - introStart) / 0.7, (introEnd - tt) / 0.6)) });
