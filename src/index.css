@@ -97,6 +97,99 @@ body {
   }
 }
 
+/* ---------- Phones (Android and iPhone) ----------
+   Rules used (common guidance from Apple and Google): tap targets at least 44 px, text boxes at 16 px so iPhones
+   do not zoom in when you tap them, room around the screen edges for notches and home bars, and no delay or
+   accidental double-tap zoom on buttons. Plain CSS only, so nothing is added to the app's size or speed. */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+.vtx-app button,
+.vtx-app a,
+.vtx-app label,
+.vtx-app select,
+.vtx-app input,
+.vtx-app summary {
+  touch-action: manipulation;
+}
+#root {
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.vtx-app > header {
+  padding-top: max(0.625rem, env(safe-area-inset-top));
+}
+@media (max-width: 1023px) {
+  .vtx-app input:not([type="checkbox"]):not([type="range"]):not([type="color"]):not([type="file"]),
+  .vtx-app select,
+  .vtx-app textarea {
+    font-size: 16px !important;
+    min-height: 44px;
+  }
+  .vtx-app textarea {
+    line-height: 1.4;
+  }
+  .vtx-app button,
+  .vtx-app a.block {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  .vtx-app > header {
+    gap: 0.625rem !important;
+    padding-bottom: 0.75rem;
+  }
+  .vtx-app > header button,
+  .vtx-app > header select {
+    min-height: 40px;
+  }
+  .vtx-app input[type="checkbox"] {
+    width: 22px;
+    height: 22px;
+    flex-shrink: 0;
+  }
+  .vtx-app input[type="range"] {
+    min-height: 36px;
+  }
+  .vtx-app input[type="color"] {
+    min-height: 40px;
+    min-width: 48px;
+  }
+  .vtx-app summary {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+  }
+  /* more air between things in the side panel */
+  .vtx-side-inner {
+    padding: 1rem !important;
+  }
+  .vtx-side-inner > * + * {
+    margin-top: 1.25rem !important;
+  }
+  .vtx-side-inner .gap-2 {
+    gap: 0.75rem !important;
+  }
+  .vtx-side-inner .gap-3 {
+    gap: 1rem !important;
+  }
+  .vtx-side-inner .space-y-1\.5 > * + * {
+    margin-top: 0.625rem !important;
+  }
+  .vtx-side-inner .space-y-3 > * + * {
+    margin-top: 1rem !important;
+  }
+  .vtx-side-inner label.flex {
+    padding: 0.75rem !important;
+  }
+  .vtx-side nav button {
+    padding-top: 0.875rem;
+    padding-bottom: 0.875rem;
+  }
+}
+
 h1,
 h2 {
   font-family: var(--heading);
