@@ -64,6 +64,16 @@ The same repository also runs on Cloudflare Workers, which can be used instead o
 
 `functions/api/` holds the equivalent entry points for Cloudflare Pages, if you prefer Pages to Workers. The Cloudflare setup has only been checked with local mock tests, not on a live Cloudflare account.
 
+## Changing the look (styles)
+
+The app's styles are a small prepared file, `src/tailwind.css`, so the page does not build them in the browser on every visit (this keeps it fast on phones). If you add or change Tailwind class names in `src/App.tsx`, regenerate it with the Tailwind v3.4.17 standalone program:
+
+```
+tailwindcss -c tailwind.config.cjs -i tailwind.input.css -o src/tailwind.css --minify
+```
+
+Skipping this step leaves new class names unstyled. Plain CSS (spacing and phone rules) lives in `src/index.css` and needs no regeneration.
+
 ## Known limits
 
 - Export records in real time, so the tab must stay open and in front for the full length of the video. The app asks the browser for MP4 first (best for sharing and uploading) and falls back to WebM when the browser cannot record MP4. The download button shows which one you got. MP4 recorded this way is a streaming-style MP4; it plays and uploads on common apps, but some editors may show an unknown length.
