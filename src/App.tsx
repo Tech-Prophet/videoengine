@@ -1,21 +1,30 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { makeMusic, MUSIC_STYLES } from "./music.ts";
+import type { MusicStyle } from "./music.ts";
+import { XFD, fillsFrame, moveFor, motionP, pose } from "./motion.ts";
+import type { Move } from "./motion.ts";
+import { drawCaption } from "./captions.ts";
+import { drawTitle } from "./title.ts";
+import { duckFactor, levels, rmsActive, rmsAll } from "./mix.ts";
 
 type Fmt = "long" | "short";
+type Fit = "blur" | "fill" | "plain"; // what to do with a picture whose shape does not match the video
 type Tab = "create" | "scenes" | "audio" | "camera" | "publish";
 type Media = HTMLImageElement | HTMLVideoElement;
-type Clip = { url: string; kind: "image" | "video" };
+type Clip = { url: string; kind: "image" | "video"; src?: "upload" | "ai" | "pexels" | "pixabay" }; // src = where the visual came from (no src = recorded on camera)
 // onCam = a person speaks on camera in this scene (their own voice, real lip movement). Otherwise it is narration only.
 type Draft = { title: string; text: string; onScreen: string; visual: string; onCam?: boolean };
 type Mark = { at: number; len: number; text: string }; // one narrated sentence: start and length in seconds, relative to the start of its scene
 type Scene = Draft & { id: string; duration: number; palette: number; clips: Clip[]; marks?: Mark[] };
 type Meta = { title?: string; description?: string; tags?: string[]; thumb?: string; intro?: string };
 type Parsed = { meta: Meta; scenes: Draft[] };
-type Live = { scenes: Scene[]; starts: number[]; total: number; caps: boolean; W: number; H: number; intro: string; voiceVol: number; musicVol: number };
+type Live = { scenes: Scene[]; starts: number[]; total: number; fit: Fit; caps: boolean; W: number; H: number; intro: string; voiceVol: number; musicVol: number; duck: boolean; lead: number; tail: number; outro: string; introColor: string; accent: string; fps: number };
 
 const PALETTES = [["#1b1442", "#6d3df0"], ["#0b1f33", "#13a8c9"], ["#0f2a22", "#2fb67c"], ["#3a1212", "#e8643a"], ["#1d1d3a", "#d6458f"]];
 const FONT = "Inter, system-ui, sans-serif";
-const SHOT_SECONDS = 3; // Pictures rotate faster for more visuals per scene
+const NO_PROVIDERS = { pixabay: false, pexels: false, voice: false, voiceProvider: "" };
+const SHOT_SECONDS = 4; // A picture stays about 4 seconds: long enough to read, short enough to keep moving
 const uid = () => Math.random().toString(36).slice(2, 9);
 const words = (s: string) => s.trim().split(/\s+/).filter(Boolean);
 const clock = (s: number) => {
@@ -33,10 +42,64 @@ const shotsOf = (sc: Scene) => (sc.onCam ? sc.clips.slice(0, 1) : sc.clips);
 const SHOT_SECONDS_VIDEO = 5;
 const shotCount = (dur: number, vid = false) => (vid ? Math.max(2, Math.min(8, Math.ceil(dur / SHOT_SECONDS_VIDEO))) : Math.max(3, Math.min(12, Math.ceil(dur / SHOT_SECONDS))));
 
+// MP4 first: it plays and uploads almost everywhere (WhatsApp, Messenger, Instagram, TikTok, YouTube).
+// WebM is only the fallback for browsers that cannot record MP4.
+const kindOf = (f: File): "image" | "video" | null =>
+  f.type.startsWith("image") ? "image" : f.type.startsWith("video") ? "video"
+    : /\.(jpe?g|png|webp|gif|bmp|avif|heic|heif)$/i.test(f.name) ? "image" // some phones report no file type at all
+    : /\.(mp4|m4v|mov|webm|mkv|3gp|avi)$/i.test(f.name) ? "video" : null;
+// Brings one picked file into the app. Photos are shrunk once to a size the video needs (a 12 MP phone photo is far bigger),
+// and every file is checked to be readable now, so a problem shows up as a message instead of a silently empty scene.
+async function importFile(f: File): Promise<Clip> {
+  const kind = kindOf(f);
+  if (!kind) throw new Error("not a picture or video");
+  if (kind === "image") {
+    const url = URL.createObjectURL(f);
+    try {
+      // Read only the size first (no full decode), then let the browser decode straight to the size the video needs.
+      const im = new Image();
+      await new Promise<void>((ok, bad) => { im.onload = () => ok(); im.onerror = () => bad(new Error("this browser cannot open that photo format")); im.src = url; });
+      const nw = im.naturalWidth, nh = im.naturalHeight;
+      if (!nw || !nh) throw new Error("the photo has no readable size");
+      const sc = Math.min(1, 1920 / Math.max(nw, nh));
+      if (sc === 1) return { url, kind: "image", src: "upload" }; // already small: use it as it is
+      const w = Math.max(1, Math.round(nw * sc)), h = Math.max(1, Math.round(nh * sc));
+      let bmp: ImageBitmap;
+      try { bmp = await createImageBitmap(im, { resizeWidth: w, resizeHeight: h, resizeQuality: "medium" }); } catch { throw new Error("not enough memory to open that photo"); }
+      const c = document.createElement("canvas");
+      c.width = w; c.height = h;
+      const x = c.getContext("2d");
+      if (!x) { bmp.close(); throw new Error("not enough memory to open that photo"); }
+      x.drawImage(bmp, 0, 0); bmp.close();
+      const blob = await new Promise<Blob | null>((ok) => c.toBlob(ok, "image/jpeg", 0.9));
+      if (!blob) throw new Error("could not prepare the photo");
+      URL.revokeObjectURL(url);
+      return { url: URL.createObjectURL(blob), kind: "image", src: "upload" };
+    } catch (e) { URL.revokeObjectURL(url); throw e; }
+  }
+  if (f.size > 300e6) throw new Error("video is over 300 MB, too big for a phone browser. Trim or compress it first");
+  const url = URL.createObjectURL(f);
+  try {
+    await new Promise<void>((ok, bad) => {
+      const v = document.createElement("video");
+      const t = window.setTimeout(() => bad(new Error("the video took too long to open")), 20000);
+      v.preload = "metadata"; v.muted = true;
+      v.onloadedmetadata = () => { clearTimeout(t); ok(); };
+      v.onerror = () => { clearTimeout(t); bad(new Error("this browser cannot play that video")); };
+      v.src = url;
+    });
+  } catch (e) { URL.revokeObjectURL(url); throw e; }
+  return { url, kind: "video", src: "upload" };
+}
+
 const MIME_CANDIDATES = [
+  "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
+  "video/mp4;codecs=avc1,mp4a.40.2",
+  "video/mp4;codecs=h264,aac",
+  "video/mp4;codecs=avc1.42E01E,opus",
+  "video/mp4",
   "video/webm;codecs=vp8,opus",
   "video/webm;codecs=vp9,opus",
-  "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
   "video/webm",
 ];
 
@@ -173,14 +236,19 @@ async function fetchPhoto(url: string): Promise<string | null> {
   } catch { return null; }
 }
 
-async function stockImages(key: string, groups: { q: string; cap: number }[], f: Fmt, n: number): Promise<string[]> {
+// In the stock and voice helpers below, "key" is the access code for our own server functions
+// (or "" when that provider has no key on the server). Real provider keys never reach the browser.
+const apiStock = (qs: string, code: string) => fetch(`/api/stock?${qs}`, { headers: { "x-access-code": code } });
+const orient = (f: Fmt) => (f === "long" ? "landscape" : "portrait");
+
+async function stockImages(key: string, groups: { q: string; cap: number }[], f: Fmt, n: number, page = 1): Promise<string[]> {
   const seen = new Set<number>(), urls: string[] = [];
   if (key) {
     for (const g of groups) {
       if (!g.q || urls.length >= n) continue;
       try {
-        const r = await fetch(`https://pixabay.com/api/?key=${encodeURIComponent(key)}&q=${encodeURIComponent(g.q)}&image_type=photo&orientation=${f === "long" ? "horizontal" : "vertical"}&safesearch=true&per_page=${Math.min(200, n + 6)}`);
-        if (!r.ok) throw new Error("Pixabay request failed. Check your key.");
+        const r = await apiStock(`provider=pixabay&kind=photos&q=${encodeURIComponent(g.q)}&orientation=${orient(f)}&per_page=${Math.min(50, n + 6)}&page=${page}`, key);
+        if (!r.ok) throw new Error("Pixabay request failed. Check the access code and the server keys.");
         let taken = 0;
         for (const p of (await r.json()).hits ?? []) {
           if (urls.length >= n || taken >= g.cap) break;
@@ -193,13 +261,13 @@ async function stockImages(key: string, groups: { q: string; cap: number }[], f:
   return (await Promise.all(urls.map(fetchPhoto))).filter((u): u is string => !!u);
 }
 
-async function stockVideos(key: string, groups: { q: string; cap: number }[], n: number, quality: "medium" | "small"): Promise<string[]> {
+async function stockVideos(key: string, groups: { q: string; cap: number }[], n: number, quality: "medium" | "small", page = 1): Promise<string[]> {
   const seen = new Set<number>(), urls: string[] = [];
   if (!key) return [];
   for (const g of groups) {
     if (!g.q || urls.length >= n) continue;
     try {
-      const r = await fetch(`https://pixabay.com/api/videos/?key=${encodeURIComponent(key)}&q=${encodeURIComponent(g.q)}&safesearch=true&per_page=${Math.min(50, n + 8)}`);
+      const r = await apiStock(`provider=pixabay&kind=videos&q=${encodeURIComponent(g.q)}&per_page=${Math.min(50, n + 8)}&page=${page}`, key);
       if (!r.ok) continue;
       let taken = 0;
       for (const p of (await r.json()).hits ?? []) {
@@ -222,7 +290,7 @@ const blobUrl = async (u: string): Promise<string | null> => {
   try { const r = await fetch(u); if (r.ok) return URL.createObjectURL(await r.blob()); } catch { /* skip */ }
   return null;
 };
-async function pexelsVideos(key: string, groups: { q: string; cap: number }[], f: Fmt, n: number, res: number): Promise<string[]> {
+async function pexelsVideos(key: string, groups: { q: string; cap: number }[], f: Fmt, n: number, res: number, page = 1): Promise<string[]> {
   if (!key || n <= 0) return [];
   const seen = new Set<number>(), links: string[] = [];
   const want = res >= 1440 ? 1920 : 1280;
@@ -230,7 +298,7 @@ async function pexelsVideos(key: string, groups: { q: string; cap: number }[], f
   for (const g of groups) {
     if (!g.q || links.length >= n) continue;
     try {
-      const r = await fetch(`https://api.pexels.com/videos/search?query=${encodeURIComponent(g.q)}&orientation=${f === "long" ? "landscape" : "portrait"}&per_page=${Math.min(40, n + 8)}`, { headers: { Authorization: key } });
+      const r = await apiStock(`provider=pexels&kind=videos&q=${encodeURIComponent(g.q)}&orientation=${orient(f)}&per_page=${Math.min(40, n + 8)}&page=${page}`, key);
       if (!r.ok) continue;
       let taken = 0;
       for (const v of (await r.json()).videos ?? []) {
@@ -245,13 +313,13 @@ async function pexelsVideos(key: string, groups: { q: string; cap: number }[], f
   }
   return (await Promise.all(links.map(blobUrl))).filter((u): u is string => !!u);
 }
-async function pexelsPhotos(key: string, groups: { q: string; cap: number }[], f: Fmt, n: number): Promise<string[]> {
+async function pexelsPhotos(key: string, groups: { q: string; cap: number }[], f: Fmt, n: number, page = 1): Promise<string[]> {
   if (!key || n <= 0) return [];
   const seen = new Set<number>(), urls: string[] = [];
   for (const g of groups) {
     if (!g.q || urls.length >= n) continue;
     try {
-      const r = await fetch(`https://api.pexels.com/v1/search?query=${encodeURIComponent(g.q)}&orientation=${f === "long" ? "landscape" : "portrait"}&per_page=${Math.min(40, n + 6)}`, { headers: { Authorization: key } });
+      const r = await apiStock(`provider=pexels&kind=photos&q=${encodeURIComponent(g.q)}&orientation=${orient(f)}&per_page=${Math.min(40, n + 6)}&page=${page}`, key);
       if (!r.ok) continue;
       let taken = 0;
       for (const p of (await r.json()).photos ?? []) {
@@ -266,64 +334,32 @@ async function pexelsPhotos(key: string, groups: { q: string; cap: number }[], f
   return (await Promise.all(urls.map(fetchPhoto))).filter((u): u is string => !!u);
 }
 
-// Order: Pexels video, Pixabay video, Pexels photos, Pixabay photos, then placeholders so a scene is never empty.
-async function stockFootage(k: { pixabay: string; pexels: string }, groups: { q: string; cap: number }[], f: Fmt, n: number, res: number, video: boolean): Promise<Clip[]> {
+// Order: Pexels video, Pixabay video, Pexels photos, Pixabay photos. Every clip is tagged with its source.
+async function stockFootage(k: { pixabay: string; pexels: string }, groups: { q: string; cap: number }[], f: Fmt, n: number, res: number, video: boolean, page = 1): Promise<Clip[]> {
   const out: Clip[] = [];
-  const add = (urls: string[], kind: Clip["kind"]) => urls.forEach((url) => { if (out.length < n) out.push({ url, kind }); });
-  if (video && k.pexels) add(await pexelsVideos(k.pexels, groups, f, n, res), "video");
-  if (video && k.pixabay && out.length < n) add(await stockVideos(k.pixabay, groups, n - out.length, res >= 1080 ? "medium" : "small"), "video");
-  if (out.length < n && k.pexels) add(await pexelsPhotos(k.pexels, groups, f, n - out.length), "image");
+  const add = (urls: string[], kind: Clip["kind"], src: NonNullable<Clip["src"]>) => urls.forEach((url) => { if (out.length < n) out.push({ url, kind, src }); });
+  if (video && k.pexels) add(await pexelsVideos(k.pexels, groups, f, n, res, page), "video", "pexels");
+  if (video && k.pixabay && out.length < n) add(await stockVideos(k.pixabay, groups, n - out.length, res >= 1080 ? "medium" : "small", page), "video", "pixabay");
+  if (out.length < n && k.pexels) add(await pexelsPhotos(k.pexels, groups, f, n - out.length, page), "image", "pexels");
   if (out.length < n) {
-    try { add(await stockImages(k.pixabay, groups, f, n - out.length), "image"); }
+    try { add(await stockImages(k.pixabay, groups, f, n - out.length, page), "image", "pixabay"); }
     catch (e) { if (!out.length) throw e; }
   }
   return out;
 }
-type CommonsInfo = { url?: string; thumburl?: string; size?: number; width?: number; height?: number; mime?: string; extmetadata?: Record<string, { value?: string }> };
-type CommonsPage = { title?: string; imageinfo?: CommonsInfo[] };
-const plain = (h: string) => h.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim();
-// Wikimedia Commons: free, no key. Only licences that allow commercial use (CC0, public domain, CC BY, CC BY-SA); the author credit is collected for the description.
-async function commonsMedia(groups: { q: string; cap: number }[], kind: "video" | "image", n: number, credits: string[]): Promise<string[]> {
-  if (n <= 0) return [];
-  const seen = new Set<string>(), urls: string[] = [], notes: string[] = [];
-  for (const g of groups) {
-    if (!g.q || urls.length >= n) continue;
-    try {
-      const q = `${g.q} filetype:${kind === "video" ? "video" : "bitmap"}`;
-      const r = await fetch(`https://commons.wikimedia.org/w/api.php?action=query&format=json&origin=*&generator=search&gsrnamespace=6&gsrlimit=${Math.min(30, n * 3 + 6)}&gsrsearch=${encodeURIComponent(q)}&prop=imageinfo&iiprop=url|size|mime|extmetadata&iiurlwidth=1920`);
-      if (!r.ok) continue;
-      const pages = Object.values(((await r.json()).query?.pages ?? {}) as Record<string, CommonsPage>);
-      let taken = 0;
-      for (const p of pages) {
-        if (urls.length >= n || taken >= g.cap) break;
-        const ii = p.imageinfo?.[0];
-        if (!ii || !p.title || seen.has(p.title)) continue;
-        const lic = ii.extmetadata?.LicenseShortName?.value ?? "";
-        if (!/^(cc0|pd|public domain|cc by(-sa)? )/i.test(lic) || /-nc|-nd/i.test(lic)) continue;
-        const mime = ii.mime ?? "";
-        let u: string | undefined;
-        if (kind === "video") {
-          if (!(mime.startsWith("video/") || mime === "application/ogg") || (ii.size ?? 1e9) > 25e6 || (ii.width ?? 0) < 640) continue;
-          u = ii.url;
-        } else {
-          if (!/^image\/(jpeg|png|webp)$/.test(mime) || (ii.width ?? 0) < 1000) continue;
-          u = ii.thumburl || ii.url;
-        }
-        if (!u) continue;
-        seen.add(p.title); taken++; urls.push(u);
-        const artist = plain(ii.extmetadata?.Artist?.value ?? "").slice(0, 60) || "unknown author";
-        notes.push(`"${p.title.replace(/^File:/, "").replace(/\.[a-z0-9]+$/i, "")}" by ${artist} (${lic}), via Wikimedia Commons`);
-      }
-    } catch { /* try next search */ }
-  }
-  const got = await Promise.all(urls.map(kind === "video" ? blobUrl : fetchPhoto));
-  got.forEach((x, i) => { if (x) credits.push(notes[i]); });
-  return got.filter((x): x is string => !!x);
-}
-const withCredits = (d: string, list: string[]) => {
-  const head = d.split("\n\nCredits (Wikimedia Commons):")[0];
-  const uniq = [...new Set(list)].slice(0, 25);
-  return uniq.length ? `${head}\n\nCredits (Wikimedia Commons):\n${uniq.join("\n")}` : head;
+// Visuals the user supplied (uploads, or recorded on camera) are never replaced by generated ones.
+const mine = (c: Clip) => c.src === "upload" || !c.src;
+const ORIGIN: Record<string, string> = { upload: "Your upload", ai: "AI image", pexels: "Pexels", pixabay: "Pixabay" };
+const originOf = (c: Clip) => (c.src ? `${ORIGIN[c.src]}${c.src === "pexels" || c.src === "pixabay" ? (c.kind === "video" ? " video" : " photo") : ""}` : "Camera recording");
+// Pexels and Pixabay ask for a visible source line. It is kept in the description automatically, only while their visuals are in the video.
+const CREDIT_HEAD = "\n\nStock footage credits:";
+const withCredits = (d: string, list: Scene[]) => {
+  const head = d.split(CREDIT_HEAD)[0];
+  const all = list.flatMap((s) => s.clips);
+  const lines: string[] = [];
+  if (all.some((c) => c.src === "pexels")) lines.push("Videos and photos provided by Pexels (https://www.pexels.com)");
+  if (all.some((c) => c.src === "pixabay")) lines.push("Videos and photos from Pixabay (https://pixabay.com)");
+  return lines.length ? `${head}${CREDIT_HEAD}\n${lines.join("\n")}` : head;
 };
 type AiState = { fails: number };
 const ANGLES = ["wide establishing shot", "close-up detail", "medium shot with natural action", "low angle dramatic view", "aerial view", "soft focus foreground depth"];
@@ -359,7 +395,7 @@ async function aiImages(queries: string[], topic: string, f: Fmt, n: number, st:
 }
 type Source = "ai" | "stock" | "mix";
 const shotsFor = (src: Source, dur: number, moving: boolean) => (src === "ai" ? aiShots(dur) : src === "mix" ? Math.max(4, Math.min(8, Math.ceil(dur / 7))) : shotCount(dur, moving));
-type Gather = { keys: { pixabay: string; pexels: string }; source: Source; topic: string; f: Fmt; res: number; moving: boolean; st: AiState; credits: string[] };
+type Gather = { keys: { pixabay: string; pexels: string }; source: Source; topic: string; f: Fmt; res: number; moving: boolean; st: AiState; page?: number };
 // The sentence being narrated at a given point (0 to 1) of a scene, used to make AI pictures match the story.
 const narrAt = (text: string, frac: number) => {
   const ss = sentencesOf(text);
@@ -370,46 +406,41 @@ const narrAt = (text: string, frac: number) => {
 async function gatherClips(o: Gather, sc: Scene, n: number): Promise<Clip[]> {
   const own = sc.visual.split("|").map((x) => x.trim()).filter(Boolean);
   const qs = own.length ? own : [sc.title];
+  const page = o.page ?? 1;
+  const aiClips = async (count: number, offset: number): Promise<Clip[]> => {
+    const narr = Array.from({ length: count }, (_, i) => narrAt(sc.text, (offset + i) / Math.max(1, n)));
+    return (await aiImages(qs, o.topic, o.f, count, o.st, narr)).map((url) => ({ url, kind: "image" as const, src: "ai" as const }));
+  };
   if (o.source === "mix") {
     // Half real stock video, half AI photos, interleaved so every scene has both moving video and images.
-    const vids: string[] = [];
+    const vids: Clip[] = [];
     const want = o.moving ? Math.floor(n / 2) : 0;
     if (want > 0) {
       const groups = photoGroups(sc, o.topic, want);
-      if (o.keys.pexels) vids.push(...(await pexelsVideos(o.keys.pexels, groups, o.f, want, o.res)));
-      if (vids.length < want && o.keys.pixabay) vids.push(...(await stockVideos(o.keys.pixabay, groups, want - vids.length, o.res >= 1080 ? "medium" : "small")));
-      if (vids.length < want) vids.push(...(await commonsMedia(groups, "video", want - vids.length, o.credits)));
+      if (o.keys.pexels) (await pexelsVideos(o.keys.pexels, groups, o.f, want, o.res, page)).forEach((url) => vids.push({ url, kind: "video", src: "pexels" }));
+      if (vids.length < want && o.keys.pixabay) (await stockVideos(o.keys.pixabay, groups, want - vids.length, o.res >= 1080 ? "medium" : "small", page)).forEach((url) => vids.push({ url, kind: "video", src: "pixabay" }));
     }
     const nImg = n - vids.length;
     const slot = (i: number) => (i < vids.length ? 2 * i + 1 : vids.length + i);
     const narr = Array.from({ length: nImg }, (_, i) => narrAt(sc.text, slot(i) / Math.max(1, n)));
-    const imgs = await aiImages(qs, o.topic, o.f, nImg, o.st, narr);
+    const imgs = (await aiImages(qs, o.topic, o.f, nImg, o.st, narr)).map((url) => ({ url, kind: "image" as const, src: "ai" as const }));
     const mixed: Clip[] = [];
     for (let i = 0; i < Math.max(vids.length, imgs.length); i++) {
-      if (i < vids.length) mixed.push({ url: vids[i], kind: "video" });
-      if (i < imgs.length) mixed.push({ url: imgs[i], kind: "image" });
+      if (i < vids.length) mixed.push(vids[i]);
+      if (i < imgs.length) mixed.push(imgs[i]);
     }
     return mixed;
   }
   const out: Clip[] = [];
   const hasStockKey = !!(o.keys.pexels || o.keys.pixabay);
-  const ai = async (count: number, offset: number) => {
-    const narr = Array.from({ length: count }, (_, i) => narrAt(sc.text, (offset + i) / Math.max(1, n)));
-    (await aiImages(qs, o.topic, o.f, count, o.st, narr)).forEach((url) => out.push({ url, kind: "image" }));
-  };
-  if (o.source === "ai") await ai(n, 0);
+  if (o.source === "ai") out.push(...(await aiClips(n, 0)));
   if (out.length < n && hasStockKey) {
     const need = n - out.length;
-    try { out.push(...(await stockFootage(o.keys, photoGroups(sc, o.topic, need), o.f, need, o.res, o.moving))); }
+    try { out.push(...(await stockFootage(o.keys, photoGroups(sc, o.topic, need), o.f, need, o.res, o.moving, page))); }
     catch (e) { if (!out.length) throw e; }
   }
-  if (o.source === "stock" && out.length < n) {
-    const groups = photoGroups(sc, o.topic, n - out.length);
-    if (o.moving) (await commonsMedia(groups, "video", n - out.length, o.credits)).forEach((url) => out.push({ url, kind: "video" }));
-    if (out.length < n) (await commonsMedia(groups, "image", n - out.length, o.credits)).forEach((url) => out.push({ url, kind: "image" }));
-  }
   // Stock mode: any gap is filled with AI pictures made from the narration, never random photos.
-  if (o.source === "stock" && out.length < n) await ai(n - out.length, out.length);
+  if (o.source === "stock" && out.length < n) out.push(...(await aiClips(n - out.length, out.length)));
   return out;
 }
 // Keyword searches only: the scene's own VISUAL lines and shorter versions of them. Generic title/topic searches are used only when a scene has no VISUAL line.
@@ -434,19 +465,40 @@ const borrowVisuals = (list: Scene[]): Scene[] =>
     return best ? { ...sc, clips: best.clips } : sc;
   });
 
+/* ---------- SAVED PROJECT (this browser only) ---------- */
+// Saves the script, scene text, durations and settings. Pictures, clips and audio are NOT saved,
+// because they live in memory; they are fetched or recorded again.
+const SAVE_KEY = "vortex-project";
+type Saved = {
+  v: 1; fmt: Fmt; res: number; fps: number; wpm: number; topic: string; tone: string; minutes: number; minSec: number;
+  scriptText: string; intro: string; source: Source; moving: boolean; caps: boolean; fit?: Fit; musicStyle?: MusicStyle; autoMusic?: boolean; balance?: boolean; leadSec?: number; outro?: string; introColor?: string; accent?: string;
+  vTitle: string; vDesc: string; vTags: string; thumbText: string;
+  scenes: Omit<Scene, "clips" | "marks">[];
+};
+function loadSaved(): Saved | null {
+  try {
+    const d = JSON.parse(localStorage.getItem(SAVE_KEY) || "null") as Partial<Saved> | null;
+    if (!d || d.v !== 1 || !Array.isArray(d.scenes) || !d.scenes.length) return null;
+    return d as Saved;
+  } catch { return null; }
+}
+
 /* ---------- NARRATION ---------- */
 async function speak(key: string, text: string, voice: string) {
+  let last = "";
   for (let a = 0; a < 3; a++) {
-    const r = await fetch("https://api.openai.com/v1/audio/speech", {
+    const r = await fetch("/api/tts", {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-      body: JSON.stringify({ model: "tts-1", voice, input: text }),
+      headers: { "Content-Type": "application/json", "x-access-code": key },
+      body: JSON.stringify({ text, voice }),
     });
     if (r.ok) return r.blob();
-    if (r.status !== 429 && r.status < 500) throw new Error(`Voice API returned ${r.status}.`);
+    const why = await r.json().then((j: { error?: string }) => j.error).catch(() => undefined);
+    if (![429, 502, 503, 504].includes(r.status)) throw new Error(why || `Voice API returned ${r.status}.`);
+    last = why || `Voice API returned ${r.status}.`;
     await new Promise((res) => setTimeout(res, 1500 * (a + 1)));
   }
-  throw new Error("Voice API is busy.");
+  throw new Error(last || "Voice API is busy.");
 }
 const splitText = (t: string, max = 3500) => {
   const out: string[] = [];
@@ -536,33 +588,78 @@ function drawBg(ctx: CanvasRenderingContext2D, w: number, h: number, sc: Scene, 
 }
 const mediaReady = (m: Media | undefined) => !!m && (m instanceof HTMLVideoElement ? m.readyState >= 2 && m.videoWidth > 0 : m.complete && m.naturalWidth > 0);
 const mediaSettled = (m: Media | undefined) => !m || (m instanceof HTMLVideoElement ? m.readyState >= 2 || !!m.error : m.complete);
-type Move = [number, number, number, number, number, number];
-const MOVES: Move[] = [
-  [1.04, 1.22, 0, 0, 0, 0],
-  [1.22, 1.04, 0, 0, 0, 0],
-  [1.18, 1.18, 1, -1, 0, 0],
-  [1.18, 1.18, -1, 1, 0, 0],
-  [1.18, 1.18, 0, 0, -1, 1],
-  [1.18, 1.18, 0, 0, 1, -1],
-  [1.06, 1.22, 0.7, -0.7, -0.5, 0.5],
-  [1.22, 1.06, -0.7, 0.7, 0.5, -0.5],
-];
-const SEQ = [0, 2, 1, 3, 6, 4, 7, 5];
-const OPEN: Move = [1, 1.25, 0, 0, 0, 0];
-const CLOSE: Move = [1.25, 1, 0, 0, 0, 0];
-const STILL: Move = [1, 1, 0, 0, 0, 0];
-const moveFor = (si: number, k: number, open: boolean, close: boolean): Move => (open ? OPEN : close ? CLOSE : MOVES[SEQ[(si * 3 + k) % SEQ.length]]);
-const ease = (p: number) => { const q = Math.max(0, Math.min(1, p)); return 0.5 * q + 0.5 * q * q * (3 - 2 * q); };
-function drawMedia(ctx: CanvasRenderingContext2D, w: number, h: number, m: Media, p: number, mv: Move | null) {
-  const mw = m instanceof HTMLVideoElement ? m.videoWidth : m.naturalWidth;
-  const mh = m instanceof HTMLVideoElement ? m.videoHeight : m.naturalHeight;
-  if (!mw || !mh) return;
-  const base = Math.max(w / mw, h / mh), e = ease(p), c = mv ?? STILL;
-  const g = m instanceof HTMLVideoElement ? 0.6 : 1;
-  const z = 1 + (c[0] + (c[1] - c[0]) * e - 1) * g;
-  const dw = mw * base * z, dh = mh * base * z;
-  const px = (c[2] + (c[3] - c[2]) * e) * g, py = (c[4] + (c[5] - c[4]) * e) * g;
-  ctx.drawImage(m, (w - dw) / 2 + (px * (dw - w)) / 2, (h - dh) / 2 + (py * (dh - h)) / 2, dw, dh);
+// Pictures are shrunk once (in steps, with high quality) to about 1.5 times the video size. Drawing a huge phone photo
+// straight onto a small frame while it moves makes it shimmer.
+type Src = { img: CanvasImageSource; w: number; h: number };
+const shrunk = new WeakMap<HTMLImageElement, { long: number; c: HTMLCanvasElement }>();
+function srcOf(m: Media, long: number): Src | null {
+  if (m instanceof HTMLVideoElement) return m.videoWidth && m.videoHeight ? { img: m, w: m.videoWidth, h: m.videoHeight } : null;
+  const nw = m.naturalWidth, nh = m.naturalHeight;
+  if (!nw || !nh) return null;
+  if (Math.max(nw, nh) <= long * 1.25) return { img: m, w: nw, h: nh };
+  const hit = shrunk.get(m);
+  if (hit && hit.long === long) return { img: hit.c, w: hit.c.width, h: hit.c.height };
+  const sc = long / Math.max(nw, nh), tw = Math.max(1, Math.round(nw * sc)), th = Math.max(1, Math.round(nh * sc));
+  let cur: CanvasImageSource = m, cw = nw, ch = nh;
+  const step = (w2: number, h2: number) => {
+    const c = document.createElement("canvas");
+    c.width = w2; c.height = h2;
+    const x = c.getContext("2d");
+    if (!x) return null;
+    x.imageSmoothingQuality = "high";
+    x.drawImage(cur, 0, 0, w2, h2);
+    return c;
+  };
+  while (cw / 2 >= tw) {
+    const c = step(Math.round(cw / 2), Math.max(1, Math.round(ch / 2)));
+    if (!c) return { img: m, w: nw, h: nh };
+    cur = c; cw = c.width; ch = c.height;
+  }
+  const fin = step(tw, th);
+  if (!fin) return { img: m, w: nw, h: nh };
+  shrunk.set(m, { long, c: fin });
+  return { img: fin, w: tw, h: th };
+}
+let blurCv: HTMLCanvasElement | null = null;
+let fitMode: Fit = "blur"; // set once per frame from the project setting
+// Draws a picture or video into the frame. If its shape is close to the frame's, it fills the frame. If not
+// (for example an upright phone photo in a wide video), the whole picture is shown over a blurred, darkened copy of itself.
+function paintMedia(ctx: CanvasRenderingContext2D, w: number, h: number, m: Media, z: number, px: number, py: number) {
+  const s = srcOf(m, Math.ceil(Math.max(w, h) * 1.5));
+  if (!s) return;
+  ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
+  const matches = fillsFrame(s.w, s.h, w, h);
+  if (matches || fitMode === "fill") {
+    const base = Math.max(w / s.w, h / s.h), dw = s.w * base * z, dh = s.h * base * z;
+    const spareY = dh - h;
+    // A picture that does not match the frame is cropped with its upper part kept, because faces and subjects sit higher up.
+    const y = matches ? (h - dh) / 2 + (py * spareY) / 2 : Math.max(-spareY, Math.min(0, -spareY * 0.3 + (py * spareY) / 2));
+    ctx.drawImage(s.img, (w - dw) / 2 + (px * (dw - w)) / 2, y, dw, dh);
+    return;
+  }
+  if (fitMode === "plain") {
+    const g = ctx.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, "#14151f"); g.addColorStop(1, "#07080d");
+    ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+  } else {
+    const bw = 96, bh = Math.max(2, Math.round((96 * h) / w));
+    blurCv ??= document.createElement("canvas");
+    if (blurCv.width !== bw || blurCv.height !== bh) { blurCv.width = bw; blurCv.height = bh; }
+    const bx = blurCv.getContext("2d");
+    if (bx) {
+      bx.imageSmoothingQuality = "high";
+      const k = Math.max(bw / s.w, bh / s.h), cw = bw / k, ch = bh / k;
+      bx.drawImage(s.img, (s.w - cw) / 2, (s.h - ch) / 2, cw, ch, 0, 0, bw, bh);
+      ctx.drawImage(blurCv, 0, 0, w, h);
+      ctx.fillStyle = "rgba(0,0,0,0.45)"; ctx.fillRect(0, 0, w, h);
+    }
+  }
+  const base = Math.min(w / s.w, h / s.h), zz = 1 + (z - 1) * 0.4, dw = s.w * base * zz, dh = s.h * base * zz;
+  ctx.drawImage(s.img, (w - dw) / 2, (h - dh) / 2, dw, dh);
+}
+function drawMedia(ctx: CanvasRenderingContext2D, w: number, h: number, m: Media, p: number, mv: Move | null, len: number) {
+  const c = pose(mv, p, len, m instanceof HTMLVideoElement);
+  paintMedia(ctx, w, h, m, c.z, c.px, c.py);
 }
 function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, sc: Scene, local: number, time: number, getMedia: (url: string) => Media | undefined, si: number, count: number) {
   drawBg(ctx, w, h, sc, time);
@@ -572,24 +669,31 @@ function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, sc: Scen
   const mvOf = (k: number) => (sc.onCam ? null : moveFor(si, k, si === 0 && k === 0, si === count - 1 && k === sh.n - 1));
   let m = getMedia(shots[sh.k].url);
   if (!mediaReady(m)) m = shots.map((x) => getMedia(x.url)).find(mediaReady);
-  if (m) drawMedia(ctx, w, h, m, Math.min(1, sh.sl / sh.len), mvOf(sh.k));
-  const xf = Math.min(0.5, sh.len * 0.3);
+  if (m) drawMedia(ctx, w, h, m, motionP(sh.k, sh.sl, sh.len), mvOf(sh.k), sh.len);
+  const xf = Math.min(XFD, sh.len * 0.3);
   if (sh.k < sh.n - 1 && sh.sl > sh.len - xf) {
     const nm = getMedia(shots[sh.k + 1].url);
-    if (mediaReady(nm) && nm) { ctx.globalAlpha = (sh.sl - (sh.len - xf)) / xf; drawMedia(ctx, w, h, nm, 0, mvOf(sh.k + 1)); ctx.globalAlpha = 1; }
+    if (mediaReady(nm) && nm) {
+      // The next shot is already moving while it fades in, so nothing freezes during the dissolve.
+      const st = shotStarts(sc), nlen = (sh.k + 1 < sh.n - 1 ? st[sh.k + 2] : sc.duration) - st[sh.k + 1];
+      ctx.globalAlpha = (sh.sl - (sh.len - xf)) / xf;
+      drawMedia(ctx, w, h, nm, motionP(sh.k + 1, Math.min(0, sh.sl - sh.len), nlen), mvOf(sh.k + 1), nlen);
+      ctx.globalAlpha = 1;
+    }
   }
   if (m && !sc.onCam) { ctx.fillStyle = "rgba(0,0,0,0.3)"; ctx.fillRect(0, 0, w, h); }
 }
 function drawFrame(ctx: CanvasRenderingContext2D, L: Live, i: number, tt: number, getMedia: (url: string) => Media | undefined) {
   const { W: w, H: h } = L;
+  fitMode = L.fit;
   const sc = L.scenes[i];
   if (!sc) { ctx.fillStyle = "#05060d"; ctx.fillRect(0, 0, w, h); return; }
   const u = Math.min(w, h) / 1080;
   const local = tt - L.starts[i];
-  const XF = 0.5;
+  const XF = XFD;
   if (i > 0 && local < XF) {
     const pv = L.scenes[i - 1];
-    drawScene(ctx, w, h, pv, pv.duration, tt, getMedia, i - 1, L.scenes.length);
+    drawScene(ctx, w, h, pv, pv.duration + local, tt, getMedia, i - 1, L.scenes.length); // the old scene keeps moving while it fades out
     ctx.globalAlpha = Math.max(0, local / XF);
     drawScene(ctx, w, h, sc, local, tt, getMedia, i, L.scenes.length);
     ctx.globalAlpha = 1;
@@ -597,32 +701,25 @@ function drawFrame(ctx: CanvasRenderingContext2D, L: Live, i: number, tt: number
 
   ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillStyle = "#fff";
 
-  const introEnd = Math.min(5.5, L.scenes[0].duration - 0.3, L.total * 0.4);
-  if (L.intro && tt > 0.4 && tt < introEnd) {
-    ctx.globalAlpha = Math.max(0, Math.min(1, (tt - 0.4) / 0.5, (introEnd - tt) / 0.5));
-    ctx.font = `700 ${70 * u}px ${FONT}`;
-    ctx.shadowColor = "rgba(0,0,0,.7)"; ctx.shadowBlur = 20 * u;
-    const lines = wrap(ctx, L.intro, w * 0.8), lh = 84 * u, y0 = h * 0.42 - ((lines.length - 1) * lh) / 2;
-    lines.forEach((l, k) => ctx.fillText(l, w / 2, y0 + k * lh));
-    ctx.shadowBlur = 0; ctx.shadowColor = "transparent"; ctx.globalAlpha = 1;
-  }
+  // Title: heavy capitals with a thick outline, centred, mixed colours (same look as the thumbnail).
+  const introEnd = Math.min(L.lead > 0 ? L.lead + 0.5 : 5.5, L.scenes[0].duration - 0.3, L.total * 0.4);
+  const introStart = L.lead > 0 ? 0.5 : 0.4;
+  if (L.intro && tt > introStart && tt < introEnd)
+    drawTitle(ctx, w, L.intro, { size: 195 * u, cy: h * 0.42, color: L.introColor, accent: L.accent, family: FONT, alpha: Math.max(0, Math.min(1, (tt - introStart) / 0.7, (introEnd - tt) / 0.6)) });
+  // Ending message: typed by you, shown over the last seconds while the music rises and fades.
+  if (L.outro && L.tail > 0 && tt > L.total - L.tail + 0.3 && tt < L.total - 0.6)
+    drawTitle(ctx, w, L.outro, { size: 92 * u, cy: h * 0.45, color: L.introColor, accent: L.accent, family: FONT, alpha: Math.max(0, Math.min(1, (tt - (L.total - L.tail + 0.3)) / 0.7)) });
 
   if (L.caps && sc.text) {
     const cues = cuesOf(sc);
     let ci = 0;
     cues.forEach((c, k) => { if (local >= c.t0 - 0.05) ci = k; });
     const cue = cues[ci];
-    if (cue && local <= cue.t1 + 0.5) {
+    if (cue && local >= cue.t0 - 0.05 && local <= cue.t1 + 0.5) { // never before the voice says it: no caption during the music-only start
       const nCh = Math.max(1, Math.ceil(cue.ws.length / 7)), size = Math.ceil(cue.ws.length / nCh);
       const pr = Math.max(0, Math.min(0.999, (local - cue.t0) / Math.max(0.2, cue.t1 - cue.t0)));
       const idx = Math.min(nCh - 1, Math.floor(pr * nCh));
-      ctx.font = `300 ${48 * u}px ${FONT}`;
-      const cl = wrap(ctx, cue.ws.slice(idx * size, idx * size + size).join(" "), w * 0.8);
-      const cy = h * (w > h ? 0.88 : 0.72), lh = 62 * u;
-      ctx.fillStyle = "#fff";
-      ctx.shadowColor = "rgba(0,0,0,.85)"; ctx.shadowBlur = 6 * u; ctx.shadowOffsetY = 1 * u;
-      cl.forEach((l, k) => ctx.fillText(l, w / 2, cy + (k - (cl.length - 1) / 2) * lh));
-      ctx.shadowBlur = 0; ctx.shadowOffsetY = 0; ctx.shadowColor = "transparent";
+      drawCaption(ctx, w, h, cue.ws.slice(idx * size, idx * size + size).join(" "));
     }
   }
 
@@ -641,40 +738,61 @@ const btn = (p = false) => `rounded-md px-3 py-1.5 text-sm font-medium disabled:
 const Field = ({ l, children }: { l: string; children: ReactNode }) => (
   <label className="block"><span className="mb-1 block text-xs text-slate-400">{l}</span>{children}</label>
 );
-const STEPS = ["Read script", "Record narration", "Find visuals", "Render video"];
+const STEPS = ["Read script", "Voiceover and music", "Find visuals", "Render video"];
 
 export default function App() {
-  const [fmt, setFmt] = useState<Fmt>("long");
-  const [res, setRes] = useState(1080);
-  const [fps, setFps] = useState(30);
-  const [wpm, setWpm] = useState(150);
+  const [saved] = useState(loadSaved);
+  const [fmt, setFmt] = useState<Fmt>(saved?.fmt ?? "long");
+  const [res, setRes] = useState(saved?.res ?? (typeof window !== "undefined" && window.innerWidth < 768 ? 720 : 1080)); // phones start at 720p: much lighter to render
+  const [fps, setFps] = useState(saved?.fps ?? 30);
+  const [wpm, setWpm] = useState(saved?.wpm ?? 150);
   const [tab, setTab] = useState<Tab>("create");
-  const [topic, setTopic] = useState("");
-  const [tone, setTone] = useState("Friendly");
-  const [minutes, setMinutes] = useState(3);
-  const [minSec, setMinSec] = useState(120);
-  const [scriptText, setScriptText] = useState("");
-  const [intro, setIntro] = useState("Vortex AI Studio");
-  const [scenes, setScenes] = useState<Scene[]>(() => [mkScene({ title: "Hook", text: "Paste a script in the Create tab and press Generate video.", onScreen: "", visual: "" }, 0, 150)]);
+  const [topic, setTopic] = useState(saved?.topic ?? "");
+  const [tone, setTone] = useState(saved?.tone ?? "Friendly");
+  const [minutes, setMinutes] = useState(saved?.minutes ?? 3);
+  const [minSec, setMinSec] = useState(saved?.minSec ?? 120);
+  const [scriptText, setScriptText] = useState(saved?.scriptText ?? "");
+  const [intro, setIntro] = useState(saved?.intro ?? "Vortex AI Studio");
+  const [scenes, setScenes] = useState<Scene[]>(() =>
+    saved
+      ? saved.scenes.map((s) => ({ ...s, onCam: false, clips: [] }))
+      : [mkScene({ title: "Hook", text: "Paste a script in the Create tab and press Generate video.", onScreen: "", visual: "" }, 0, 150)]);
   const [selId, setSelId] = useState("");
   const [playing, setPlaying] = useState(false);
   const [t, setT] = useState(0);
-  const [caps, setCaps] = useState(true);
+  const [caps, setCaps] = useState(saved?.caps ?? true);
+  const [fit, setFit] = useState<Fit>(saved?.fit ?? "blur");
+  const [adding, setAdding] = useState(false);
+  const [showCode, setShowCode] = useState(false);
   const [safe, setSafe] = useState(true);
   const [busy, setBusy] = useState(false);
   const [stage, setStage] = useState(0);
   const [autoRender, setAutoRender] = useState(false);
-  const [moving, setMoving] = useState(true);
-  const [source, setSource] = useState<Source>("mix");
+  const [moving, setMoving] = useState(saved?.moving ?? true);
+  const [source, setSource] = useState<Source>(saved?.source ?? "mix");
   const aiSt = useRef<AiState>({ fails: 0 });
-  const creditsRef = useRef<string[]>([]);
+  const findPage = useRef<Record<string, number>>({}); // per scene: which page of stock results "Find and add more" is on
   const [msg, setMsg] = useState("");
-  const [keys, setKeys] = useState<{ pixabay: string; pexels: string; openai: string }>(() => {
-    try { const s = JSON.parse(localStorage.getItem("vortex-keys") || "{}"); return { pixabay: s.pixabay || "", pexels: s.pexels || "", openai: s.openai || "" }; } catch { return { pixabay: "", pexels: "", openai: "" }; }
-  });
+  const [code, setCode] = useState<string>(() => { try { return localStorage.getItem("vortex-access") || ""; } catch { return ""; } });
+  const [server, setServer] = useState(NO_PROVIDERS);
+  const [serverMsg, setServerMsg] = useState("");
+  // Each value is the access code when that provider has a key on the server, otherwise "".
+  const keys = { pixabay: server.pixabay ? code : "", pexels: server.pexels ? code : "", voice: server.voice ? code : "" };
   const [oaVoice, setOaVoice] = useState("alloy");
+  const [cfVoice, setCfVoice] = useState("orion");
   const [musicUrl, setMusicUrl] = useState("");
   const [musicVol, setMusicVol] = useState(0.15);
+  const [musicStyle, setMusicStyle] = useState<MusicStyle>(saved?.musicStyle ?? "calm");
+  const [autoMusic, setAutoMusic] = useState(saved?.autoMusic ?? true); // Generate video adds a music track by itself
+  const [leadSec, setLeadSec] = useState(saved?.leadSec ?? 4); // seconds of music alone before the voice and captions start
+  const [outro, setOutro] = useState(saved?.outro ?? ""); // typed ending message, shown over the last seconds
+  const [introColor, setIntroColor] = useState(saved?.introColor ?? "#ffffff"); // title colours; *starred* words use the accent
+  const [accent, setAccent] = useState(saved?.accent ?? "#ffd400");
+  const [leadUsed, setLeadUsed] = useState(0); // music-only start actually built into the current voiceover
+  const [balance, setBalance] = useState(saved?.balance ?? true); // level the voice and keep the music under it
+  const [voiceRms, setVoiceRms] = useState<number | null>(null); // measured loudness of the voiceover and the music
+  const [musicRms, setMusicRms] = useState<number | null>(null);
+  const [makingMusic, setMakingMusic] = useState(false);
   const [voiceUrl, setVoiceUrl] = useState("");
   const [voiceVol, setVoiceVol] = useState(1);
   const [voiceDur, setVoiceDur] = useState(0);
@@ -684,11 +802,11 @@ export default function App() {
   const [camMode, setCamMode] = useState<"video" | "audio">("video");
   const [recording, setRecording] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [file, setFile] = useState<{ url: string; name: string; mb: number } | null>(null);
-  const [vTitle, setVTitle] = useState("");
-  const [vDesc, setVDesc] = useState("");
-  const [vTags, setVTags] = useState("");
-  const [thumbText, setThumbText] = useState("");
+  const [file, setFile] = useState<{ url: string; name: string; mb: number; blob: Blob } | null>(null);
+  const [vTitle, setVTitle] = useState(saved?.vTitle ?? "");
+  const [vDesc, setVDesc] = useState(saved?.vDesc ?? "");
+  const [vTags, setVTags] = useState(saved?.vTags ?? "");
+  const [thumbText, setThumbText] = useState(saved?.thumbText ?? "");
   const [thumbMb, setThumbMb] = useState<number | null>(null);
   const [thumbClip, setThumbClip] = useState("");
   const [thumbBump, setThumbBump] = useState(0);
@@ -705,17 +823,32 @@ export default function App() {
   const playingRef = useRef(false);
   const onEnd = useRef<(() => void) | null>(null);
   const exportStart = useRef<number | null>(null);
+  const capture = useRef<{ req: () => void; frames: number } | null>(null); // while rendering: pushes each drawn picture into the recording
   const acRef = useRef<AudioContext | null>(null);
   const tracks = useRef<Record<string, { el: HTMLAudioElement; gain: GainNode }>>({});
+  const master = useRef<DynamicsCompressorNode | null>(null);
+  const sideScroll = useRef<HTMLDivElement | null>(null);
+  const dropFile = () => setFile((o) => { if (o) URL.revokeObjectURL(o.url); return null; }); // free the old video's memory
   const clipGain = useRef<GainNode | null>(null);
   const clipNodes = useRef<Map<HTMLVideoElement, MediaElementAudioSourceNode>>(new Map());
 
-  const [W, H] = dims(fmt, res);
+  const [W, H] = dims(fmt, res); // the size of the finished video
+  // While editing, the preview is drawn smaller (a phone cannot redraw 1080p many times a second); the full size is used only while rendering.
+  const previewLong = typeof window !== "undefined" && window.innerWidth >= 1024 ? 1280 : 854;
+  const ps = exporting ? 1 : Math.min(1, previewLong / Math.max(W, H));
+  const cw = Math.max(2, Math.round((W * ps) / 2) * 2), ch = Math.max(2, Math.round((H * ps) / 2) * 2);
+  const lv = levels(voiceRms, musicRms);
+  const voiceGain = balance ? voiceVol * lv.voice : voiceVol;
+  const musicGain = balance ? lv.music : musicVol;
   const sel = scenes.find((s) => s.id === selId) ?? scenes[0];
   const starts = useMemo(() => scenes.reduce<number[]>((a, _s, i) => [...a, i ? a[i - 1] + scenes[i - 1].duration : 0], []), [scenes]);
   const total = scenes.reduce((a, s) => a + s.duration, 0);
-  const live = useRef<Live>({ scenes, starts, total, caps, W, H, intro, voiceVol, musicVol });
-  live.current = { scenes, starts, total, caps, W, H, intro, voiceVol, musicVol };
+  // The ending (typed message over a music swell and fade-out) is added after the last scene whenever the video is drawn or recorded.
+  const endExtra = scenes.length ? (outro.trim() ? 5 : 3) : 0;
+  const fullTotal = total + endExtra;
+  const liveScenes = useMemo(() => (endExtra ? scenes.map((x, k) => (k === scenes.length - 1 ? { ...x, duration: x.duration + endExtra } : x)) : scenes), [scenes, endExtra]);
+  const live = useRef<Live>({ scenes: liveScenes, starts, total: total + endExtra, fit, caps, W: cw, H: ch, intro, voiceVol: voiceGain, musicVol: musicGain, duck: balance, lead: leadUsed, tail: endExtra, outro, introColor, accent, fps });
+  live.current = { scenes: liveScenes, starts, total: total + endExtra, fit, caps, W: cw, H: ch, intro, voiceVol: voiceGain, musicVol: musicGain, duck: balance, lead: leadUsed, tail: endExtra, outro, introColor, accent, fps };
 
   const totalWords = Math.round(minutes * wpm);
   const nScenes = fmt === "short" ? 4 : Math.max(6, Math.min(16, Math.round(minutes * 2)));
@@ -744,20 +877,48 @@ DELIVERY: voiceover
 
 (continue until Scene ${nScenes}. Use "DELIVERY: on-camera" only for a scene where a real person must speak straight to the viewer. Otherwise always use "DELIVERY: voiceover".)`;
 
-  const ensureAc = () => { if (!acRef.current) acRef.current = new AudioContext(); return acRef.current; };
+  const ensureAc = () => {
+    if (!acRef.current) {
+      // 24 kHz is plenty for speech and our music, and halves the memory and work of every audio step.
+      try { acRef.current = new AudioContext({ sampleRate: 24000 }); } catch { acRef.current = new AudioContext(); }
+    }
+    return acRef.current;
+  };
+  const skipMeasure = useRef({ voice: false, music: false }); // audio we just made: its loudness is already known
+  const setGeneratedMusic = (data: Float32Array, sr: number) => {
+    skipMeasure.current.music = true; setMusicRms(rmsAll(data));
+    setMusicUrl(URL.createObjectURL(toWav(data, sr)));
+  };
+  // Loudness of an audio file (speech: only the speaking parts count), used to balance the voice and the music.
+  const measure = async (url: string, speech: boolean) => {
+    try {
+      const a = await ensureAc().decodeAudioData(await (await fetch(url)).arrayBuffer());
+      const d = a.getChannelData(0);
+      return speech ? rmsActive(d) : rmsAll(d);
+    } catch { return null; }
+  };
+  // Everything audible goes through one soft limiter, so a louder voice can never distort or clip.
+  const getMaster = () => {
+    if (!master.current) {
+      const ac = ensureAc(), c = ac.createDynamicsCompressor();
+      c.threshold.value = -3; c.knee.value = 0; c.ratio.value = 20; c.attack.value = 0.003; c.release.value = 0.15;
+      c.connect(ac.destination); master.current = c;
+    }
+    return master.current;
+  };
   const track = (k: "music" | "voice") => {
     const ac = ensureAc();
     if (!tracks.current[k]) {
       const el = new Audio();
       const gain = ac.createGain();
       ac.createMediaElementSource(el).connect(gain);
-      gain.connect(ac.destination);
+      gain.connect(getMaster());
       tracks.current[k] = { el, gain };
     }
     return tracks.current[k];
   };
   const getClipGain = () => {
-    if (!clipGain.current) { const ac = ensureAc(); const g = ac.createGain(); g.connect(ac.destination); clipGain.current = g; }
+    if (!clipGain.current) { const ac = ensureAc(); const g = ac.createGain(); g.connect(getMaster()); clipGain.current = g; }
     return clipGain.current;
   };
   const syncAudio = (play: boolean) =>
@@ -777,7 +938,38 @@ DELIVERY: voiceover
   const pause = () => { playingRef.current = false; setPlaying(false); syncAudio(false); };
   const seek = (s: number) => { tRef.current = Math.max(0, Math.min(s, live.current.total)); setT(tRef.current); if (playingRef.current) syncAudio(true); };
 
-  useEffect(() => { try { localStorage.setItem("vortex-keys", JSON.stringify(keys)); } catch { /* ignore */ } }, [keys]);
+  useEffect(() => { try { localStorage.setItem("vortex-access", code); } catch { /* ignore */ } }, [code]);
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      try {
+        const data: Saved = {
+          v: 1, fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, vTitle, vDesc, vTags, thumbText,
+          scenes: scenes.map((s) => ({ id: s.id, title: s.title, text: s.text, onScreen: s.onScreen, visual: s.visual, duration: s.duration, palette: s.palette })),
+        };
+        localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+      } catch { /* storage full or blocked: skip */ }
+    }, 800);
+    return () => clearTimeout(id);
+  }, [fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, vTitle, vDesc, vTags, thumbText, scenes]);
+  useEffect(() => {
+    if (!code) { setServer(NO_PROVIDERS); setServerMsg(""); return undefined; }
+    const ctl = new AbortController();
+    const id = window.setTimeout(async () => {
+      try {
+        const r = await fetch("/api/status", { headers: { "x-access-code": code }, signal: ctl.signal });
+        const j = (await r.json()) as { error?: string; voice?: boolean; voiceProvider?: string; pexels?: boolean; pixabay?: boolean };
+        if (!r.ok) { setServer(NO_PROVIDERS); setServerMsg(j.error || `The server returned ${r.status}.`); return; }
+        setServer({ voice: !!j.voice, voiceProvider: j.voiceProvider ?? "", pexels: !!j.pexels, pixabay: !!j.pixabay });
+        setServerMsg("Connected.");
+      } catch {
+        if (!ctl.signal.aborted) { setServer(NO_PROVIDERS); setServerMsg("Could not reach the server. The server functions only run on the hosted site (Netlify or Cloudflare), not in a local preview."); }
+      }
+    }, 500);
+    return () => { ctl.abort(); clearTimeout(id); };
+  }, [code]);
+
+  // Keeps the Pexels/Pixabay source line in the description in step with the visuals actually used.
+  useEffect(() => { setVDesc((d) => withCredits(d, scenes)); }, [scenes]);
 
   useEffect(() => {
     const m = mediaRef.current;
@@ -797,7 +989,7 @@ DELIVERY: voiceover
   }, [scenes]);
 
   useEffect(() => {
-    let last = performance.now(), lastUi = 0;
+    let last = performance.now(), lastUi = 0, lastL: Live | null = null, lastT = -1, lastDraw = 0;
     const getMedia = (u: string) => mediaRef.current[u];
     const tick = () => {
       const now = performance.now();
@@ -812,8 +1004,12 @@ DELIVERY: voiceover
           else tRef.current += dt;
         }
         if (tRef.current >= L.total) { tRef.current = L.total; setT(L.total); pause(); onEnd.current?.(); }
-        else if (now - lastUi > 100) { lastUi = now; setT(tRef.current); }
+        else if (now - lastUi > (exportStart.current !== null ? 1000 : 200)) { lastUi = now; setT(tRef.current); } // while rendering the screen updates once a second
       }
+      // Nothing is playing and nothing changed: do not redraw the picture 60 times a second (this is what made taps lag).
+      // A slow redraw every 0.4 s still catches pictures that finish loading.
+      if (!playingRef.current && exportStart.current === null && L === lastL && tRef.current === lastT && now - lastDraw < 400) return;
+      lastL = L; lastT = tRef.current;
       const tt = Math.min(tRef.current, Math.max(0, L.total - 0.001));
       let i = 0;
       L.starts.forEach((s, k) => { if (tt >= s) i = k; });
@@ -843,12 +1039,18 @@ DELIVERY: voiceover
       const ac = acRef.current;
       if (ac) {
         const vt = tracks.current.voice, mt = tracks.current.music;
-        const vTarget = sc?.onCam ? 0 : L.voiceVol, mTarget = L.musicVol * (sc?.onCam ? 0.25 : 1);
+        // Music ducks under speech: down quickly when a sentence starts, back up slowly afterwards.
+        const duck = L.duck ? duckFactor(!!(vt && vt.el.src), sc?.marks, local) : 1;
+        const vTarget = sc?.onCam ? 0 : L.voiceVol, mTarget = L.musicVol * (sc?.onCam ? 0.25 : 1) * duck
+          * (L.lead > 0 && tt < L.lead ? 1.7 : 1) // a little more music while it plays alone at the start
+          * (L.tail > 0 && tt > L.total - L.tail ? 1.3 * Math.max(0, Math.min(1, (L.total - tt) / 2.5)) : 1); // swell, then fade out at the end
         if (vt && Math.abs(vt.gain.gain.value - vTarget) > 0.001) vt.gain.gain.setTargetAtTime(vTarget, ac.currentTime, 0.03);
-        if (mt && Math.abs(mt.gain.gain.value - mTarget) > 0.001) mt.gain.gain.setTargetAtTime(mTarget, ac.currentTime, 0.03);
+        if (mt && Math.abs(mt.gain.gain.value - mTarget) > 0.001) mt.gain.gain.setTargetAtTime(mTarget, ac.currentTime, mTarget < mt.gain.gain.value ? 0.08 : 0.5);
       }
       const ctx = canvasRef.current?.getContext("2d");
-      if (ctx) drawFrame(ctx, L, i, tt, getMedia);
+      // Preview: 30 pictures a second. Rendering: exactly as many as the video's frame rate (drawing more is wasted work).
+      const gap = capture.current ? 1000 / L.fps - 4 : playingRef.current ? 30 : 0;
+      if (ctx && !(gap && now - lastDraw < gap)) { lastDraw = now; drawFrame(ctx, L, i, tt, getMedia); const cap = capture.current; if (cap) { cap.req(); cap.frames++; } }
     };
     let worker: Worker | null = null, timer = 0;
     try {
@@ -860,11 +1062,18 @@ DELIVERY: voiceover
   }, []);
 
   useEffect(() => {
-    if (!musicUrl) return;
+    if (!musicUrl) {
+      const old = tracks.current.music; // music was removed: stop it and empty the player
+      if (old) { old.el.pause(); old.el.removeAttribute("src"); }
+      setMusicRms(null);
+      return;
+    }
+    if (skipMeasure.current.music) skipMeasure.current.music = false; else void measure(musicUrl, false).then(setMusicRms);
     const T = track("music"); T.el.src = musicUrl; T.el.loop = true;
   }, [musicUrl]);
   useEffect(() => {
-    if (!voiceUrl) return;
+    if (!voiceUrl) { setVoiceRms(null); return; }
+    if (skipMeasure.current.voice) skipMeasure.current.voice = false; else void measure(voiceUrl, true).then(setVoiceRms);
     const el = track("voice").el;
     el.src = voiceUrl;
     el.onloadedmetadata = () => {
@@ -896,8 +1105,8 @@ DELIVERY: voiceover
     else if (bg instanceof HTMLCanvasElement) { bw = bg.width; bh = bg.height; }
     else if (url) ready = false;
     if (bg && bw && bh && ready) {
-      const k = Math.max(1280 / bw, 720 / bh);
-      ctx.drawImage(bg, (1280 - bw * k) / 2, (720 - bh * k) / 2, bw * k, bh * k);
+      if (bg instanceof HTMLVideoElement || bg instanceof HTMLImageElement) paintMedia(ctx, 1280, 720, bg, 1, 0, 0);
+      else { const k = Math.max(1280 / bw, 720 / bh); ctx.drawImage(bg, (1280 - bw * k) / 2, (720 - bh * k) / 2, bw * k, bh * k); }
     }
     const sh = ctx.createLinearGradient(0, 0, 1280, 0);
     sh.addColorStop(0, "rgba(0,0,0,.7)"); sh.addColorStop(0.65, "rgba(0,0,0,.25)"); sh.addColorStop(1, "rgba(0,0,0,0)");
@@ -931,31 +1140,59 @@ DELIVERY: voiceover
     return list.map((s) => ({ ...s, duration: Math.max(1, (dur * words(s.text).length) / tw), marks: undefined }));
   };
   const fitVoice = () => { setScenes(fitTo(scenes, voiceDur)); setMsg("Scene lengths now match your voiceover."); };
-  const attach = (fl: FileList | null) => {
-    const a = Array.from(fl ?? []);
-    if (!a.length) return;
-    const use = a.filter((f) => f.type.startsWith("video") || f.type.startsWith("image"));
-    if (!use.length) return;
-    patch({ clips: use.map((f) => ({ url: URL.createObjectURL(f), kind: f.type.startsWith("video") ? ("video" as const) : ("image" as const) })) });
+  const attach = async (files: File[]) => {
+    if (!files.length || !sel) return;
+    const id = sel.id;
+    setAdding(true);
+    const got: (Clip | undefined)[] = [], failed: string[] = [];
+    let nextFile = 0, finished = 0;
+    // Two files at a time: faster than one by one, and still gentle on phone memory.
+    const worker = async () => {
+      while (nextFile < files.length) {
+        const i = nextFile++;
+        try { got[i] = await importFile(files[i]); }
+        catch (e) { failed.push(`${files[i].name} (${e instanceof Error ? e.message : "could not be read"})`); }
+        finished++;
+        setMsg(`Adding files: ${finished} of ${files.length} done…`);
+      }
+    };
+    setMsg(`Adding ${files.length} file${files.length === 1 ? "" : "s"}…`);
+    await Promise.all([worker(), worker()]);
+    const added = got.filter((c): c is Clip => !!c);
+    if (added.length) setScenes((ss) => ss.map((x) => (x.id === id ? { ...x, clips: [...x.clips, ...added] } : x)));
+    setAdding(false);
+    setMsg(`${added.length ? `${added.length} file${added.length === 1 ? "" : "s"} added to this scene. ` : ""}${failed.length ? `Could not add: ${failed.join("; ")}.` : ""}`.trim());
+  };
+  const dropClip = (k: number) => { if (sel) patch({ clips: sel.clips.filter((_, i) => i !== k) }); };
+  const moveClip = (k: number, d: number) => {
+    if (!sel) return;
+    const j = k + d;
+    if (j < 0 || j >= sel.clips.length) return;
+    const c = [...sel.clips];
+    [c[k], c[j]] = [c[j], c[k]];
+    patch({ clips: c });
   };
   const findPhoto = async () => {
     if (!sel) return;
+    const id = sel.id;
     setBusy(true);
     try {
       aiSt.current = { fails: 0 };
       const n = shotsFor(source, sel.duration, moving);
-      setMsg(source !== "stock" ? "Generating photoreal visuals for this scene (can take a minute)…" : "Finding multiple unique visuals for scene…");
-      const clips = await gatherClips({ keys, source, topic: topic.trim(), f: fmt, res, moving, st: aiSt.current, credits: creditsRef.current }, sel, n);
-      patch({ clips });
-      setVDesc((d) => withCredits(d, creditsRef.current));
+      const page = (findPage.current[id] ?? 1) + 1; // page 1 was used when the video was generated; each press moves on to fresh results
+      findPage.current[id] = page;
+      setMsg(source !== "stock" ? "Generating more visuals for this scene (can take a minute)…" : "Finding more visuals for this scene…");
+      const clips = await gatherClips({ keys, source, topic: topic.trim(), f: fmt, res, moving, st: aiSt.current, page }, sel, n);
+      // Added after what the scene already has, so uploads and earlier finds are kept.
+      setScenes((ss) => ss.map((s) => (s.id === id ? { ...s, clips: [...s.clips, ...clips] } : s)));
       const vids = clips.filter((c) => c.kind === "video").length;
-      setMsg(`${vids} video clip${vids === 1 ? "" : "s"} and ${clips.length - vids} photo${clips.length - vids === 1 ? "" : "s"} added.`);
+      setMsg(clips.length ? `Added ${vids} video clip${vids === 1 ? "" : "s"} and ${clips.length - vids} photo${clips.length - vids === 1 ? "" : "s"}. Your other visuals were kept.` : "Nothing new was found. Your existing visuals were kept.");
     } catch (e) { setMsg(e instanceof Error ? e.message : "Visual search failed."); }
     setBusy(false);
   };
 
   const grabFrame = () => {
-    const L = { ...live.current, caps: false, intro: "" };
+    const L = { ...live.current, W, H, caps: false, intro: "" }; // thumbnails use the full size, not the small preview
     const c = document.createElement("canvas");
     c.width = L.W; c.height = L.H;
     const ctx = c.getContext("2d");
@@ -967,8 +1204,46 @@ DELIVERY: voiceover
     frameRef.current = c; setThumbBump(0); setThumbClip("frame");
     setMsg("Thumbnail picture set from preview frame.");
   };
+  const downloadThumb = async () => {
+    const c = thumbRef.current;
+    const bl = c ? await thumbBlob(c) : null;
+    if (!bl) { setMsg("Could not make the thumbnail file. Wait for the preview to load, then try again."); return; }
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(bl); a.download = "thumbnail.jpg"; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  };
+  // Share: the phone's own share sheet (WhatsApp, Telegram, Drive, YouTube...). The video file is sent as it is; nothing is uploaded by this app.
+  const shareText = [vTitle.trim(), vDesc.trim()].filter(Boolean).join("\n\n");
+  const shareVideo = async () => {
+    if (!file) { setMsg("Render the video first, then share it."); return; }
+    const f = new File([file.blob], file.name, { type: file.blob.type || "video/webm" });
+    try {
+      if (typeof navigator.canShare === "function" && navigator.canShare({ files: [f] })) {
+        // File only. Sending text with the file makes apps such as Messenger send just the text and drop the video.
+        await navigator.share({ files: [f] });
+        setMsg("Shared. The title and description are not sent with the video. Use “Copy title and description” to paste them.");
+      } else setMsg("This browser cannot share files. Download the video, then attach it in the app you want. “Copy title and description” helps with the text.");
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") return; // you closed the share sheet
+      setMsg("Sharing failed. The file may be too big for that app. Download it and attach it by hand instead.");
+    }
+  };
+  const copyShareText = async () => {
+    try { await navigator.clipboard.writeText(shareText); setMsg("Title and description copied."); }
+    catch { setMsg("Couldn't copy automatically. Select the text in the boxes above and copy it by hand."); }
+  };
+  const makeBgMusic = async () => {
+    setMakingMusic(true); setMsg("Making background music (a few seconds)…");
+    await new Promise((r) => setTimeout(r, 50)); // lets the message show before the work starts
+    try {
+      const sr = 22050;
+      setGeneratedMusic(makeMusic(musicStyle, sr), sr);
+      setMsg("Background music added. It loops under the whole video. Set its volume below.");
+    } catch { setMsg("Could not make the music on this device."); }
+    setMakingMusic(false);
+  };
   const copyPrompt = async () => {
-    try { await navigator.clipboard.writeText(aiPrompt); setMsg("Prompt copied. Paste it into Claude or ChatGPT, then paste the reply in Step 2."); }
+    try { await navigator.clipboard.writeText(aiPrompt); setMsg("Prompt copied. Paste it into Claude or ChatGPT, then paste the reply into the “Paste the script here” box."); }
     catch { setMsg("Couldn't copy automatically. Open “Show prompt” and copy it by hand."); }
   };
 
@@ -983,8 +1258,17 @@ DELIVERY: voiceover
   };
   const loadScript = () => {
     const p = parseScript(scriptText);
-    if (!p.scenes.length) { setMsg("Paste a script first. Use the prompt in Step 1 to get one from Claude or ChatGPT."); return null; }
-    const list = p.scenes.map((d, i) => mkScene(d, i, wpm));
+    if (!p.scenes.length) { setMsg("Paste a script first. Use the “Get a script” prompt to get one from Claude or ChatGPT."); return null; }
+    // Scenes whose narration is unchanged keep the visuals you added yourself (uploads or camera clips).
+    const norm = (x: string) => x.replace(/\s+/g, " ").trim().toLowerCase();
+    const pool = scenes.filter((s) => s.clips.some(mine));
+    const list = p.scenes.map((d, i) => {
+      const sc = mkScene(d, i, wpm);
+      const o = pool.find((x) => norm(x.text) === norm(d.text));
+      if (!o) return sc;
+      pool.splice(pool.indexOf(o), 1);
+      return { ...sc, clips: o.clips, ...(o.onCam ? { onCam: true, duration: o.duration } : {}) };
+    });
     setScenes(list); setSelId(list[0].id);
     return { meta: p.meta, list };
   };
@@ -992,7 +1276,8 @@ DELIVERY: voiceover
     const r = loadScript();
     if (!r) return;
     fillMeta(r.meta, r.list);
-    setMsg(`Loaded ${r.list.length} scenes. Check them in the Scenes tab, then press Generate video.`);
+    const kept = r.list.filter((s) => s.clips.length).length;
+    setMsg(`Loaded ${r.list.length} scenes${kept ? `, keeping your own visuals in ${kept}` : ""}. Check them in the Scenes tab, then press Generate video.`);
   };
 
   const narrate = async (list: Scene[]) => {
@@ -1008,7 +1293,7 @@ DELIVERY: voiceover
         setMsg(`Recording narration ${i + 1} of ${list.length} (sentence ${j + 1} of ${sents.length})…`);
         const pcs: Float32Array[] = [];
         for (const piece of splitText(sents[j])) {
-          const b = await speak(keys.openai, piece, oaVoice);
+          const b = await speak(keys.voice, piece, server.voiceProvider === "cloudflare" ? cfVoice : oaVoice);
           pcs.push((await ac.decodeAudioData(await b.arrayBuffer())).getChannelData(0).slice());
         }
         const n = pcs.reduce((a, c) => a + c.length, 0), d = new Float32Array(n);
@@ -1023,16 +1308,25 @@ DELIVERY: voiceover
       chunks.forEach((c) => { data.set(c, o); o += c.length; });
       parts.push({ data, dur: Math.max(2, len / sr + 0.3), marks });
     }
+    // Music-only lead-in: silence before the first sentence; the first scene, its captions and the picture shift by the same amount.
+    const lead = parts[0]?.data && leadSec > 0 ? leadSec : 0;
+    if (lead) {
+      const p0 = parts[0], pad = new Float32Array(Math.round(lead * sr) + p0.data!.length);
+      pad.set(p0.data!, Math.round(lead * sr));
+      parts[0] = { data: pad, dur: p0.dur + lead, marks: p0.marks?.map((m) => ({ ...m, at: m.at + lead })) };
+    }
+    setLeadUsed(lead);
     if (parts.length) parts[parts.length - 1].dur += 0.8;
     const out = new Float32Array(parts.reduce((a, p) => a + Math.round(p.dur * sr), 0));
     let at = 0;
     parts.forEach((p) => { if (p.data) out.set(p.data.subarray(0, Math.min(p.data.length, out.length - at)), at); at += Math.round(p.dur * sr); });
+    skipMeasure.current.voice = true; setVoiceRms(rmsActive(out));
     setVoiceUrl(URL.createObjectURL(toWav(out, sr)));
     return list.map((s, i) => ({ ...s, duration: parts[i].dur, marks: parts[i].marks }));
   };
 
   const generateVideo = async () => {
-    setBusy(true); setFile(null); setMsg(""); setStage(1); setThumbClip(""); setThumbBump(0);
+    setBusy(true); dropFile(); setMsg(""); setStage(1); setThumbClip(""); setThumbBump(0);
     try {
       const r = loadScript();
       if (!r) { setStage(0); return; }
@@ -1043,7 +1337,16 @@ DELIVERY: voiceover
       }
       let next = r.list, note = "";
       setStage(2);
-      if (keys.openai) next = await narrate(next);
+      // Music and voiceover are both made here, in one go.
+      if (autoMusic && !musicUrl) {
+        setMsg("Making background music…");
+        await new Promise((res) => setTimeout(res, 50));
+        try { const sr = 22050; setGeneratedMusic(makeMusic(musicStyle, sr), sr); note += " Background music added."; }
+        catch { note += " Could not make background music on this device."; }
+      }
+      if (!keys.voice && !voiceUrl) note += " No voiceover was added because the server voice is not connected (enter the access code under Server access).";
+      setLeadUsed(0);
+      if (keys.voice) next = await narrate(next);
       else if (voiceDur) next = fitTo(next, voiceDur);
       const len = next.reduce((a, s) => a + s.duration, 0);
       if (minSec && len < minSec) {
@@ -1054,28 +1357,28 @@ DELIVERY: voiceover
       setStage(3);
       const withPics: Scene[] = [];
       aiSt.current = { fails: 0 };
-      creditsRef.current = [];
       let failure = "";
       for (let i = 0; i < next.length; i++) {
         const s = next[i];
-        if (s.onCam && s.clips.length) { withPics.push(s); continue; }
+        if (s.clips.some(mine)) { withPics.push(s); continue; } // your own visuals stay; only scenes without them get generated ones
         setMsg(source !== "stock" ? `Generating photoreal visuals for scene ${i + 1} of ${next.length} (can take a minute each)…` : `Finding multiple unique visuals for scene ${i + 1} of ${next.length}…`);
         const n = shotsFor(source, s.duration, moving);
         try {
-          const clips = await gatherClips({ keys, source, topic: topic.trim(), f: fmt, res, moving, st: aiSt.current, credits: creditsRef.current }, s, n);
+          const clips = await gatherClips({ keys, source, topic: topic.trim(), f: fmt, res, moving, st: aiSt.current }, s, n);
           withPics.push({ ...s, clips });
         } catch (e) { failure = e instanceof Error ? e.message : ""; withPics.push(s); }
       }
-      if (failure) note = ` Some visuals failed: ${failure}`;
+      const keptOwn = withPics.filter((x) => x.clips.some(mine)).length;
+      if (keptOwn) note += ` Kept your own visuals in ${keptOwn} scene(s).`;
+      if (failure) note += ` Some visuals failed: ${failure}`;
       const filled = borrowVisuals(withPics);
       const reused = withPics.filter((x) => !x.clips.length).length;
       const bare = filled.filter((x) => !x.clips.length).length;
       if (reused && !bare) note += ` ${reused} scene(s) found no matching footage and reuse visuals from a neighbouring scene.`;
-      if (bare) note += ` ${bare} scene(s) have no visuals at all. Add a Pexels key under API keys and try again.`;
+      if (bare) note += ` ${bare} scene(s) have no visuals at all. Enter the access code in the Create tab for stock footage, or upload your own clips.`;
       next = filled;
       setScenes(next);
       fillMeta(r.meta, next);
-      setVDesc((d) => withCredits(d, creditsRef.current));
       setStage(4); setMsg(`Rendering video in real time (${clock(len)}). Keep this tab open and in front.${note}`);
       setAutoRender(true);
     } catch (e) { setMsg(e instanceof Error ? e.message : "Generation failed."); setStage(0); }
@@ -1089,7 +1392,7 @@ DELIVERY: voiceover
     speechSynthesis.speak(u);
   };
   const aiVoiceOnly = async () => {
-    if (!keys.openai) { setMsg("Add an OpenAI key in the Create tab first."); return; }
+    if (!keys.voice) { setMsg("AI voiceover needs the access code in the Create tab, and a voice service set on the server (the free Cloudflare one or OpenAI)."); return; }
     setBusy(true);
     try { setScenes(await narrate(scenes)); setMsg("Voiceover ready."); } catch (e) { setMsg(e instanceof Error ? e.message : "Voiceover failed."); }
     setBusy(false);
@@ -1138,10 +1441,10 @@ DELIVERY: voiceover
     // Retry: browser-default codec and no audio track, which works on most phones.
     const hasAudio = attempt === 0 && (Object.keys(tracks.current).length > 0 || live.current.scenes.some((s) => s.onCam));
     const mime = attempt === 0
-      ? MIME_CANDIDATES.map((m) => (hasAudio ? m : m.replace(/,(?:opus|mp4a[^,]*)$/, ""))).find((m) => MediaRecorder.isTypeSupported(m))
+      ? MIME_CANDIDATES.map((m) => (hasAudio ? m : m.replace(/,(?:opus|aac|mp4a[^,]*)$/, ""))).find((m) => MediaRecorder.isTypeSupported(m))
       : undefined;
     if (attempt === 0 && !mime) { setMsg("This browser can't record video. Use desktop Chrome or Edge."); return; }
-    pause(); setFile(null); setExporting(true); setStage(4);
+    pause(); dropFile(); setExporting(true); setStage(4);
     Object.values(mediaRef.current).forEach((el) => {
       if (el instanceof HTMLVideoElement && el.readyState < 2) { el.preload = "auto"; el.load(); el.play().then(() => el.pause()).catch(() => {}); }
     });
@@ -1158,11 +1461,16 @@ DELIVERY: voiceover
     await ac.resume();
     if (hasAudio && live.current.scenes.some((s) => s.onCam)) getClipGain();
     const dest = hasAudio ? ac.createMediaStreamDestination() : null;
-    const outs = hasAudio ? [...Object.values(tracks.current).map((T) => T.gain), ...(clipGain.current ? [clipGain.current] : [])] : [];
+    const outs: AudioNode[] = hasAudio ? [getMaster()] : [];
     if (dest) outs.forEach((g) => g.connect(dest));
-    const stream = c.captureStream(fps);
+    for (let k = 0; k < 40 && c.width !== W; k++) await new Promise((r) => setTimeout(r, 50)); // wait until the canvas is full size (the preview is smaller)
+    // Ask for a recorded picture exactly when one has been drawn (more reliable on phones than a timer: no frozen or repeated pictures).
+    const stream = c.captureStream(0);
+    const vtrack = stream.getVideoTracks()[0] as (MediaStreamTrack & { requestFrame?: () => void }) | undefined;
+    if (!vtrack?.requestFrame) { stream.getTracks().forEach((t) => stream.removeTrack(t)); stream.addTrack(c.captureStream(fps).getVideoTracks()[0]); }
+    capture.current = vtrack?.requestFrame ? { req: () => vtrack.requestFrame!(), frames: 0 } : null;
     if (dest) dest.stream.getAudioTracks().forEach((a) => stream.addTrack(a));
-    const opts: MediaRecorderOptions = { videoBitsPerSecond: res >= 1440 ? 12e6 : res >= 1080 ? 6e6 : 3e6 };
+    const opts: MediaRecorderOptions = { videoBitsPerSecond: res >= 1440 ? 9e6 : res >= 1080 ? 5e6 : 2.5e6 }; // lighter files: a phone can save and share them
     if (mime) opts.mimeType = mime;
     const r = new MediaRecorder(stream, opts);
     const chunks: Blob[] = [];
@@ -1178,6 +1486,7 @@ DELIVERY: voiceover
       clearTimeout(safety);
       document.removeEventListener("visibilitychange", onVis);
       exportStart.current = null;
+      const drawn = capture.current?.frames ?? 0; capture.current = null;
       if (dest) outs.forEach((g) => { try { g.disconnect(dest); } catch { /* ignore */ } });
       const type = (mime ?? (r.mimeType || "video/webm")).split(";")[0];
       const blob = new Blob(chunks, { type });
@@ -1193,9 +1502,17 @@ DELIVERY: voiceover
         return;
       }
       const took = (performance.now() - began) / 1000;
-      setFile({ url: URL.createObjectURL(blob), name: `vortex-${fmt}-${res}p.${type === "video/mp4" ? "mp4" : "webm"}`, mb: blob.size / 1e6 });
+      chunks.length = 0; // the recording now lives in one file; let go of the pieces
+      let url = "";
+      try { url = URL.createObjectURL(blob); } catch { /* reported below */ }
+      if (!url) { setExporting(false); setStage(0); setMsg("The video was recorded but this phone ran out of memory saving it. Try 720p, a shorter script, or close other apps."); return; }
+      setFile((old) => { if (old) URL.revokeObjectURL(old.url); return { url, name: `vortex-${fmt}-${res}p.${type === "video/mp4" ? "mp4" : "webm"}`, mb: blob.size / 1e6, blob }; });
       setExporting(false); setStage(5);
-      setMsg(`Recorded ${clock(took)} of ${clock(live.current.total)} planned.${hidden ? " The tab was hidden while rendering, so the video may be incomplete." : ""}${attempt > 0 ? " Saved without audio." : ""}`);
+      setTab("publish"); // download and share are in the Publish tab
+      window.setTimeout(() => { setTab("publish"); sideScroll.current?.scrollTo({ top: 0 }); }, 50); // and make sure they are in view
+      const gotFps = drawn / Math.max(1, took);
+      const slow = drawn > 0 && gotFps < fps * 0.6 ? ` Your phone only managed about ${Math.round(gotFps)} pictures a second at ${res}p, so motion may look choppy. Try 720p, or 30 fps, for smoother results.` : "";
+      setMsg(`Recorded ${clock(took)} of ${clock(live.current.total)} planned.${slow}${hidden ? " The tab was hidden while rendering, so the video may be incomplete." : ""}${attempt > 0 ? " Saved without audio." : ""}`);
     };
     onEnd.current = () => { onEnd.current = null; setTimeout(() => { if (r.state !== "inactive") r.stop(); }, 400); };
     const vEl = tracks.current.voice?.el;
@@ -1228,11 +1545,10 @@ DELIVERY: voiceover
     { ok: thumbMb !== null && thumbMb < 2, t: "Thumbnail 1280×720, under 2 MB" },
   ];
   const tabs: [Tab, string][] = [["create", "Create"], ["scenes", "Scenes"], ["audio", "Audio"], ["camera", "Camera"], ["publish", "Publish"]];
-  const setKey = (k: "pixabay" | "pexels" | "openai", v: string) => setKeys({ ...keys, [k]: v.trim() });
   const switchFmt = (f: Fmt) => { setFmt(f); setMinutes(f === "short" ? 1 : 3); setMinSec(f === "short" ? 0 : 120); };
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden" style={{ fontFamily: FONT }}>
+    <div className="vtx-app flex min-h-0 flex-1 flex-col overflow-hidden" style={{ fontFamily: FONT }}>
       <header className="flex flex-wrap items-center gap-2 sm:gap-3 border-b border-slate-800 bg-slate-950 px-3 sm:px-4 py-2.5">
         <div className="text-base sm:text-lg font-extrabold tracking-tight">Vortex <span className="text-violet-400">AI Studio</span></div>
         <div className="ml-2 flex rounded-md bg-slate-900 p-0.5 text-xs sm:text-sm">
@@ -1248,27 +1564,26 @@ DELIVERY: voiceover
         <select className={`${inp} !w-auto text-xs sm:text-sm hidden sm:block`} value={fps} onChange={(e) => setFps(+e.target.value)}>
           <option value={30}>30 fps</option><option value={60}>60 fps</option>
         </select>
-        <span className="text-xs sm:text-sm text-slate-400 hidden md:inline">{W}×{H} · {clock(total)}</span>
+        <span className="text-xs sm:text-sm text-slate-400 hidden md:inline">{W}×{H} · {clock(fullTotal)}</span>
         <div className="ml-auto flex items-center gap-2 sm:gap-3">
           {msg && <span className="basis-full text-xs text-amber-300 sm:basis-auto sm:max-w-xs sm:truncate sm:text-slate-400" title={msg}>{msg}</span>}
-          {file && <a href={file.url} download={file.name} className={`${btn(true)} text-xs sm:text-sm`}>Download {file.mb.toFixed(1)} MB</a>}
-          <button onClick={() => void exportVideo()} disabled={exporting || busy} className={`${btn()} text-xs sm:text-sm`}>{exporting ? `Rendering ${Math.round((t / (total || 1)) * 100)}%` : "Re-render"}</button>
+          <button onClick={() => void exportVideo()} disabled={exporting || busy} className={`${btn()} text-xs sm:text-sm`}>{exporting ? (t >= fullTotal - 0.5 ? "Finishing…" : `Rendering ${Math.min(99, Math.floor((t / (fullTotal || 1)) * 100))}%`) : "Re-render"}</button>
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-        <aside className="flex w-full lg:w-[400px] shrink-0 flex-col border-r border-b lg:border-b-0 border-slate-800 bg-slate-950 max-h-[50vh] lg:max-h-none overflow-y-auto">
+      <div className="vtx-body flex min-h-0 flex-1 flex-col lg:flex-row">
+        <aside className="vtx-side flex w-full lg:w-[400px] shrink-0 flex-col border-r border-b lg:border-b-0 border-slate-800 bg-slate-950 max-h-[45dvh] lg:max-h-none overflow-y-auto">
           <nav className="flex border-b border-slate-800 overflow-x-auto">
             {tabs.map(([k, l]) => (
-              <button key={k} onClick={() => setTab(k)} className={`flex-1 min-w-[70px] py-2.5 text-xs sm:text-sm whitespace-nowrap ${tab === k ? "border-b-2 border-violet-500 text-white" : "text-slate-400 hover:text-slate-200"}`}>{l}</button>
+              <button key={k} onClick={() => { setTab(k); sideScroll.current?.scrollTo({ top: 0 }); }} className={`flex-1 min-w-[70px] py-2.5 text-xs sm:text-sm whitespace-nowrap ${tab === k ? "border-b-2 border-violet-500 text-white" : "text-slate-400 hover:text-slate-200"}`}>{l}</button>
             ))}
           </nav>
-          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3 sm:p-4">
+          <div ref={sideScroll} className="vtx-side-inner min-h-0 flex-1 space-y-4 overflow-y-auto p-3 sm:p-4">
             {tab === "create" && (<>
               <Field l="Video topic or title"><input className={inp} value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="e.g. 5 habits for productivity" /></Field>
 
               <div className="space-y-3 rounded-md border border-slate-800 p-3">
-                <p className="text-sm font-medium">Step 1. Get a script from Claude, ChatGPT or any AI</p>
+                <p className="text-sm font-medium">Get a script from Claude, ChatGPT or any AI</p>
                 <div className="grid grid-cols-2 gap-3">
                   <Field l="Tone"><select className={inp} value={tone} onChange={(e) => setTone(e.target.value)}>{["Friendly", "Professional", "Energetic", "Calm", "Funny"].map((x) => <option key={x}>{x}</option>)}</select></Field>
                   <Field l="Length (minutes)"><input type="number" min={fmt === "short" ? 1 : 2} max={fmt === "short" ? 3 : 15} className={inp} value={minutes} onChange={(e) => setMinutes(Math.max(fmt === "short" ? 1 : 2, +e.target.value))} /></Field>
@@ -1282,23 +1597,39 @@ DELIVERY: voiceover
                 </details>
               </div>
 
-              <Field l="Step 2. Paste the script here">
+              <Field l="Paste the script here">
                 <textarea className={inp} rows={8} value={scriptText} onChange={(e) => setScriptText(e.target.value)} placeholder={"Paste AI script reply here..."} />
               </Field>
               <Field l="Visual source">
                 <select className={inp} value={source} onChange={(e) => setSource(e.target.value as Source)}>
                   <option value="mix">Both: AI images + stock video (free, recommended)</option>
                   <option value="ai">AI photoreal images only (free, no key)</option>
-                  <option value="stock">Stock footage (Wikimedia Commons free; Pixabay/Pexels keys optional)</option>
+                  <option value="stock">Stock footage (Pexels and Pixabay; AI pictures fill any gaps)</option>
                 </select>
               </Field>
-              {source !== "stock" && <p className="text-xs text-slate-500">{source === "mix" ? "Each scene gets AI photos plus real video clips (video comes from Wikimedia Commons with no key, plus Pixabay if you add a free key under API keys). " : "Each scene gets AI photos that match your VISUAL lines. "}Allow about 1 to 2 minutes per scene before rendering starts.</p>}
+              {source !== "stock" && <p className="text-xs text-slate-500">{source === "mix" ? "Each scene gets AI photos plus real video clips (the video clips come from Pexels and Pixabay, which needs their keys on the server and your access code; without them every picture is AI)." : "Each scene gets AI photos that match your VISUAL lines. "}Allow about 1 to 2 minutes per scene before rendering starts.</p>}
               <label className="flex items-start gap-2 rounded-md border border-slate-800 p-2 text-xs text-slate-400">
                 <input type="checkbox" className="mt-0.5" checked={moving} onChange={(e) => setMoving(e.target.checked)} />
                 <span><b className="text-slate-200">Use moving video footage.</b> Finds multiple video clips per scene. Rich visual assets automatically fill in to pack every scene with high visual variety.</span>
               </label>
+              <label className="flex items-start gap-2 rounded-md border border-slate-800 p-2 text-xs text-slate-400">
+                <input type="checkbox" className="mt-0.5" checked={autoMusic} onChange={(e) => setAutoMusic(e.target.checked)} />
+                <span><b className="text-slate-200">Add background music automatically.</b> Generate video makes a music track in the style below and keeps it quietly under the voiceover, so the voice stays clear.</span>
+              </label>
+              <Field l="Music-only start (seconds before the voice and captions begin)"><select className={inp} value={leadSec} onChange={(e) => setLeadSec(+e.target.value)}>{[0, 2, 3, 4, 5, 6, 8].map((n) => <option key={n} value={n}>{n === 0 ? "None, voice starts at once" : `${n} seconds`}</option>)}</select></Field>
+              <Field l="Music style"><select className={inp} value={musicStyle} onChange={(e) => setMusicStyle(e.target.value as MusicStyle)}>{MUSIC_STYLES.map((m) => <option key={m.id} value={m.id}>{m.label} ({m.note})</option>)}</select></Field>
+              <Field l="Pictures that do not match the video shape">
+                <select className={inp} value={fit} onChange={(e) => setFit(e.target.value as Fit)}>
+                  <option value="blur">Whole picture over a blurred background</option>
+                  <option value="fill">Fill the frame (crops the edges)</option>
+                  <option value="plain">Whole picture on a plain dark background</option>
+                </select>
+              </Field>
+              <p className="text-xs text-slate-500">This affects things like upright phone photos in a wide video. Pictures close to the video's shape always fill the frame. For upright photos, the vertical (Shorts) format fills the screen with no bars.</p>
               <button className={`${btn(true)} w-full !py-2.5`} disabled={busy || exporting} onClick={generateVideo}>{busy || exporting ? "Working…" : "Generate video"}</button>
               <button className={`${btn()} w-full`} disabled={busy || exporting} onClick={loadOnly}>Load script into scenes only</button>
+              <button className={`${btn()} w-full`} disabled={busy || exporting} onClick={() => { if (window.confirm("Clear the saved project and start fresh?")) { try { localStorage.removeItem(SAVE_KEY); } catch { /* ignore */ } window.location.reload(); } }}>Start a new project</button>
+              <p className="text-xs text-slate-500">Your script, scenes and settings are saved in this browser. Pictures, clips and audio are not saved, so they are fetched again after a refresh.</p>
               {stage > 0 && (
                 <ul className="space-y-1 text-sm">
                   {STEPS.map((s, i) => {
@@ -1308,18 +1639,24 @@ DELIVERY: voiceover
                 </ul>
               )}
               <details className="rounded-md border border-slate-800 p-3 text-sm">
-                <summary className="cursor-pointer text-slate-300">API keys (optional)</summary>
+                <summary className="cursor-pointer text-slate-300">Server access (optional)</summary>
                 <div className="mt-3 space-y-3">
-                  <Field l="Pexels key (recommended: best photoreal video and photos)"><input type="password" className={inp} value={keys.pexels} onChange={(e) => setKey("pexels", e.target.value)} /></Field>
-                  <Field l="Pixabay key (optional backup)"><input type="password" className={inp} value={keys.pixabay} onChange={(e) => setKey("pixabay", e.target.value)} /></Field>
-                  <Field l="OpenAI key (optional for AI voiceover)"><input type="password" className={inp} value={keys.openai} onChange={(e) => setKey("openai", e.target.value)} /></Field>
-                  <p className="text-xs text-slate-500">Without a Pexels or Pixabay key, scenes use random placeholder photos that will not match your script. Pexels is not issuing new keys right now, but an existing key still works. You can also upload your own clips per scene in the Scenes tab.</p>
+                  <Field l="Access code"><input type={showCode ? "text" : "password"} autoComplete="off" autoCapitalize="none" spellCheck={false} className={inp} value={code} onChange={(e) => setCode(e.target.value.trim())} /></Field>
+                  <label className="flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={showCode} onChange={(e) => setShowCode(e.target.checked)} />Show the code (to check for typos)</label>
+                  {serverMsg && <p className="text-xs text-slate-300">{serverMsg}{serverMsg === "Connected." && ` AI voiceover: ${server.voice ? `on (${server.voiceProvider === "cloudflare" ? "Cloudflare, free allowance" : "OpenAI"})` : "off"}. Pexels: ${server.pexels ? "on" : "off"}. Pixabay: ${server.pixabay ? "on" : "off"}.`}</p>}
+                  <p className="text-xs text-slate-500">Provider keys live on the server and never reach this browser. Enter the access code you set there to unlock AI voiceover and Pexels or Pixabay stock footage. Without it, the app still uses free AI images and your own uploads. When Pexels or Pixabay visuals are used, a credit line is added to the description automatically. You can also upload your own clips per scene in the Scenes tab.</p>
                 </div>
               </details>
             </>)}
 
             {tab === "scenes" && (<>
               <Field l="Intro text (first seconds)"><input className={inp} value={intro} onChange={(e) => setIntro(e.target.value)} placeholder="Opening intro text" /></Field>
+              <Field l="Ending message (last seconds)"><input className={inp} value={outro} onChange={(e) => setOutro(e.target.value)} placeholder="e.g. SUBSCRIBE for *more stories*" /></Field>
+              <div className="flex items-center gap-3 text-xs text-slate-400">
+                <label className="flex items-center gap-1.5">Text colour <input type="color" value={introColor} onChange={(e) => setIntroColor(e.target.value)} className="h-7 w-9 rounded border border-slate-700 bg-transparent" /></label>
+                <label className="flex items-center gap-1.5">Accent colour <input type="color" value={accent} onChange={(e) => setAccent(e.target.value)} className="h-7 w-9 rounded border border-slate-700 bg-transparent" /></label>
+              </div>
+              <p className="text-xs text-slate-500">Keep titles short (2 to 4 words). They are shown in capitals. Put stars around words to colour them: THE *BEE*. With no stars, the last word gets the accent colour.</p>
               <div className="space-y-1.5">
                 {scenes.map((s, i) => (
                   <div key={s.id} onClick={() => { setSelId(s.id); seek(starts[i]); }} className={`flex cursor-pointer items-center gap-2 rounded-md border px-2.5 py-2 text-sm ${s.id === sel?.id ? "border-violet-500 bg-slate-900" : "border-slate-800 hover:bg-slate-900"}`}>
@@ -1339,26 +1676,56 @@ DELIVERY: voiceover
                 <Field l="Duration (seconds)"><input type="number" min={1} step={0.5} className={inp} value={Number(sel.duration.toFixed(1))} onChange={(e) => patch({ duration: Math.max(1, +e.target.value), marks: undefined })} /></Field>
                 <div className="flex gap-2">{PALETTES.map((p, i) => <button key={i} onClick={() => patch({ palette: i })} className={`h-7 w-7 rounded-full border-2 ${sel.palette === i ? "border-white" : "border-transparent"}`} style={{ background: `linear-gradient(135deg,${p[0]},${p[1]})` }} />)}</div>
                 <Field l="Visual search keywords"><input className={inp} value={sel.visual} onChange={(e) => patch({ visual: e.target.value })} /></Field>
-                <button className={btn()} disabled={busy} onClick={findPhoto}>Find more visuals for this scene</button>
-                <p className="text-xs text-slate-500">{sel.clips.length} asset(s) packed in this scene.</p>
-                <Field l="Upload your own images and videos (select several)"><input type="file" multiple accept="image/*,video/*" className="text-xs" onChange={(e) => attach(e.target.files)} /></Field>
+                <button className={btn()} disabled={busy} onClick={findPhoto}>Find and add more visuals</button>
+                <p className="text-xs text-slate-500">New visuals are added to the end of the list. Nothing you uploaded is replaced.</p>
+                <div className="space-y-1.5">
+                  <p className="text-xs text-slate-400">{sel.clips.length ? `${sel.clips.length} visual${sel.clips.length === 1 ? "" : "s"} in this scene, shown in this order:` : "No visuals in this scene yet."}{sel.onCam ? " (Camera scene: only the first one is used.)" : ""}</p>
+                  {sel.clips.map((c, k) => (
+                    <div key={`${c.url}-${k}`} className="flex items-center gap-2 rounded-md border border-slate-800 p-1.5">
+                      <span className="w-5 text-center text-xs text-slate-500">{k + 1}</span>
+                      {c.kind === "video"
+                        ? <video src={c.url} muted playsInline preload="metadata" className="h-12 w-20 shrink-0 rounded bg-black object-cover" />
+                        : <img src={c.url} alt="" className="h-12 w-20 shrink-0 rounded bg-black object-cover" />}
+                      <span className="min-w-0 flex-1 truncate text-xs text-slate-300">{originOf(c)}</span>
+                      <button aria-label="Move earlier" disabled={k === 0} className="px-2 py-1.5 text-slate-400 hover:text-white disabled:opacity-30" onClick={() => moveClip(k, -1)}>↑</button>
+                      <button aria-label="Move later" disabled={k === sel.clips.length - 1} className="px-2 py-1.5 text-slate-400 hover:text-white disabled:opacity-30" onClick={() => moveClip(k, 1)}>↓</button>
+                      <button aria-label="Remove this visual" className="px-2 py-1.5 text-slate-400 hover:text-red-400" onClick={() => dropClip(k)}>✕</button>
+                    </div>
+                  ))}
+                </div>
+                <Field l="Add your own images and videos (select several; they are added to the list)"><input type="file" multiple accept="image/*,video/*" disabled={adding} className="text-xs" onChange={(e) => { const picked = Array.from(e.target.files ?? []); e.target.value = ""; void attach(picked); }} /></Field>
               </div>)}
             </>)}
 
             {tab === "audio" && (<>
               <h3 className="text-sm font-semibold">Voiceover</h3>
-              <Field l="AI voice"><select className={inp} value={oaVoice} onChange={(e) => setOaVoice(e.target.value)}>{["alloy", "nova", "onyx", "echo", "shimmer", "fable"].map((v) => <option key={v}>{v}</option>)}</select></Field>
+              {server.voiceProvider === "openai" && <Field l="AI voice"><select className={inp} value={oaVoice} onChange={(e) => setOaVoice(e.target.value)}>{["alloy", "nova", "onyx", "echo", "shimmer", "fable"].map((v) => <option key={v}>{v}</option>)}</select></Field>}
+              {server.voiceProvider === "cloudflare" && <Field l="AI voice"><select className={inp} value={cfVoice} onChange={(e) => setCfVoice(e.target.value)}>
+                <optgroup label="Male">{["orion", "arcas", "perseus", "angus", "orpheus", "helios", "zeus"].map((v) => <option key={v} value={v}>{v[0].toUpperCase() + v.slice(1)}</option>)}</optgroup>
+                <optgroup label="Female">{["asteria", "luna", "athena", "hera", "stella"].map((v) => <option key={v} value={v}>{v[0].toUpperCase() + v.slice(1)}</option>)}<option value="melo">Standard (uses far less of the free allowance)</option></optgroup>
+              </select></Field>}
+              <p className="text-xs text-slate-500">{server.voice ? (server.voiceProvider === "cloudflare" ? "Voices run on Cloudflare's free daily allowance. The named voices sound better but use it up faster (roughly 8 minutes of speech a day); “Standard” lasts much longer. Male and female labels are from Deepgram's published voice list, so listen before a long video." : "Voice from OpenAI. Pick one above.") : "AI voiceover is off. Enter the access code in the Create tab, and set up a voice service on the server (see the README)."}</p>
               <button className={btn(true)} disabled={busy} onClick={aiVoiceOnly}>Record AI voiceover</button>
               <Field l="Browser voice (preview)"><select className={inp} value={voiceName} onChange={(e) => setVoiceName(e.target.value)}>{voices.map((v) => <option key={v.name}>{v.name}</option>)}</select></Field>
               <div className="flex gap-2"><button className={btn()} onClick={previewVoice}>Preview</button><button className={btn()} onClick={() => speechSynthesis.cancel()}>Stop</button></div>
               <Field l="Upload custom voiceover"><input type="file" accept="audio/*" className="text-xs" onChange={(e) => e.target.files?.[0] && setVoiceUrl(URL.createObjectURL(e.target.files[0]))} /></Field>
               {voiceUrl && (<>
-                <Field l={`Voice volume: ${Math.round(voiceVol * 100)}%`}><input type="range" min={0} max={1.5} step={0.05} value={voiceVol} onChange={(e) => setVoiceVol(+e.target.value)} className="w-full accent-violet-500" /></Field>
+                <Field l={`Voiceover volume: ${Math.round(voiceVol * 100)}% (100% is already loud and clear; a limiter prevents distortion)`}><input type="range" min={0} max={2} step={0.05} value={voiceVol} onChange={(e) => setVoiceVol(+e.target.value)} className="w-full accent-violet-500" /></Field>
                 <button className={btn()} disabled={!voiceDur} onClick={fitVoice}>Fit scenes to voiceover</button>
               </>)}
               <h3 className="border-t border-slate-800 pt-4 text-sm font-semibold">Background music</h3>
-              <Field l="Upload music"><input type="file" accept="audio/*" className="text-xs" onChange={(e) => e.target.files?.[0] && setMusicUrl(URL.createObjectURL(e.target.files[0]))} /></Field>
-              {musicUrl && <Field l={`Music volume: ${Math.round(musicVol * 100)}%`}><input type="range" min={0} max={1} step={0.05} value={musicVol} onChange={(e) => setMusicVol(+e.target.value)} className="w-full accent-violet-500" /></Field>}
+              <Field l="Built-in music style"><select className={inp} value={musicStyle} onChange={(e) => setMusicStyle(e.target.value as MusicStyle)}>{MUSIC_STYLES.map((m) => <option key={m.id} value={m.id}>{m.label} ({m.note})</option>)}</select></Field>
+              <button className={btn(true)} disabled={makingMusic} onClick={() => void makeBgMusic()}>{makingMusic ? "Making music…" : "Make background music"}</button>
+              <p className="text-xs text-slate-500">Made on your device, so there is nothing to download and no licence to worry about. It is a short loop of simple synthesised instruments, so expect a plain backing track, not a studio recording. You can make another style to replace it.</p>
+              <Field l="Or upload your own music"><input type="file" accept="audio/*" className="text-xs" onChange={(e) => e.target.files?.[0] && setMusicUrl(URL.createObjectURL(e.target.files[0]))} /></Field>
+              <label className="flex items-start gap-2 rounded-md border border-slate-800 p-2 text-xs text-slate-400">
+                <input type="checkbox" className="mt-0.5" checked={balance} onChange={(e) => setBalance(e.target.checked)} />
+                <span><b className="text-slate-200">Balance voice and music automatically (recommended).</b> Evens out the voice, keeps the music well below it, and lowers it further while someone is speaking.</span>
+              </label>
+              {musicUrl && (<>
+                {!balance && <Field l={`Music volume: ${Math.round(musicVol * 100)}%`}><input type="range" min={0} max={1} step={0.05} value={musicVol} onChange={(e) => setMusicVol(+e.target.value)} className="w-full accent-violet-500" /></Field>}
+                <button className={btn()} onClick={() => setMusicUrl("")}>Remove background music</button>
+              </>)}
             </>)}
 
             {tab === "camera" && (<>
@@ -1379,6 +1746,17 @@ DELIVERY: voiceover
               <Field l="Thumbnail text"><input className={inp} value={thumbText} onChange={(e) => setThumbText(e.target.value)} placeholder="3–5 words" /></Field>
               <canvas ref={thumbRef} width={1280} height={720} className="w-full rounded-md" />
               <button className={btn()} onClick={grabFrame}>Use current preview frame</button>
+              <button className={btn()} onClick={() => void downloadThumb()}>Download thumbnail</button>
+              <div className="space-y-2 border-t border-slate-800 pt-4">
+                <h3 className="text-sm font-semibold">Share</h3>
+                {file ? <>
+                  <a href={file.url} download={file.name} className={`${btn(true)} block w-full text-center`}>Download {file.name.split(".").pop()?.toUpperCase()} video ({file.mb.toFixed(1)} MB)</a>
+                  <a href={file.url} target="_blank" rel="noreferrer" className="block text-center text-xs text-violet-300 underline">Download not starting? Open the video, then use the ⋮ menu → Download</a>
+                </> : <button className={`${btn(true)} w-full`} disabled>Download video (render it first)</button>}
+                <button className={`${btn()} w-full`} disabled={!file} onClick={() => void shareVideo()}>{file ? `Share video (${file.name.split(".").pop()?.toUpperCase()}, ${file.mb.toFixed(1)} MB)` : "Share video (render it first)"}</button>
+                <button className={`${btn()} w-full`} disabled={!shareText} onClick={() => void copyShareText()}>Copy title and description</button>
+                <p className="text-xs text-slate-500">Opens your phone's share menu so you can send the video to WhatsApp, Telegram, Google Drive and more. Only the video file is sent, not the title or description (use the copy button for those). It goes straight from this device to the app you pick; this app does not upload or host it. Desktop browsers often cannot share files, so use Download there.</p>
+              </div>
               <ul className="space-y-1 text-xs">
                 {checks.map((c) => <li key={c.t} className={c.ok ? "text-emerald-400" : "text-slate-500"}>{c.ok ? "✓" : "○"} {c.t}</li>)}
               </ul>
@@ -1386,10 +1764,10 @@ DELIVERY: voiceover
           </div>
         </aside>
 
-        <main className="flex min-w-0 flex-1 flex-col bg-black/40">
-          <div className="flex min-h-0 flex-1 items-center justify-center p-2 sm:p-4">
-            <div className="relative" style={fmt === "long" ? { width: "min(100%, 880px)", aspectRatio: `${W}/${H}` } : { height: "min(100%, 560px)", aspectRatio: `${W}/${H}` }}>
-              <canvas ref={canvasRef} width={W} height={H} className="h-full w-full rounded-md shadow-2xl object-contain" />
+        <main className="vtx-main flex min-w-0 flex-1 flex-col bg-black/40">
+          <div className="vtx-stage flex min-h-0 flex-1 items-center justify-center p-2 sm:p-4">
+            <div className={`relative ${fmt === "short" ? "vtx-short" : ""}`} style={fmt === "long" ? { width: "min(100%, 880px)", aspectRatio: `${W}/${H}` } : { aspectRatio: `${W}/${H}` }}>
+              <canvas ref={canvasRef} width={cw} height={ch} className="h-full w-full rounded-md shadow-2xl object-contain" />
               {safe && fmt === "short" && <div className="pointer-events-none absolute inset-x-0 top-0 bottom-0 rounded-md border border-dashed border-amber-400/50" style={{ margin: "6% 14% 22% 5%" }} />}
             </div>
           </div>
@@ -1397,17 +1775,17 @@ DELIVERY: voiceover
             <div className="flex flex-wrap items-center gap-2 sm:gap-3">
               <button className={btn(true)} onClick={playing ? pause : play}>{playing ? "Pause" : "Play"}</button>
               <button className={btn()} onClick={() => { pause(); seek(0); }}>Restart</button>
-              <span className="w-24 text-xs sm:text-sm tabular-nums text-slate-300">{clock(t)} / {clock(total)}</span>
+              <span className="w-24 text-xs sm:text-sm tabular-nums text-slate-300">{clock(Math.min(t, fullTotal))} / {clock(fullTotal)}</span>
               <label className="ml-auto flex items-center gap-1.5 text-xs text-slate-400"><input type="checkbox" checked={caps} onChange={(e) => setCaps(e.target.checked)} />Captions</label>
               {fmt === "short" && <label className="flex items-center gap-1.5 text-xs text-slate-400"><input type="checkbox" checked={safe} onChange={(e) => setSafe(e.target.checked)} />Safe zone</label>}
             </div>
-            <div className="relative cursor-pointer" onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); seek(((e.clientX - r.left) / r.width) * total); }}>
+            <div className="relative cursor-pointer" onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); seek(((e.clientX - r.left) / r.width) * fullTotal); }}>
               <div className="flex h-10 sm:h-12 gap-0.5 overflow-hidden rounded">
-                {scenes.map((s) => (
-                  <div key={s.id} onClick={() => setSelId(s.id)} title={s.title} style={{ flex: s.duration, background: `linear-gradient(135deg,${PALETTES[s.palette][0]},${PALETTES[s.palette][1]})` }} className={`truncate px-2 py-1 text-xs ${s.id === sel?.id ? "ring-2 ring-inset ring-white" : ""}`}>{s.title}</div>
+                {scenes.map((s, k) => (
+                  <div key={s.id} onClick={() => setSelId(s.id)} title={s.title} style={{ flex: s.duration + (k === scenes.length - 1 ? endExtra : 0), background: `linear-gradient(135deg,${PALETTES[s.palette][0]},${PALETTES[s.palette][1]})` }} className={`truncate px-2 py-1 text-xs ${s.id === sel?.id ? "ring-2 ring-inset ring-white" : ""}`}>{s.title}</div>
                 ))}
               </div>
-              <div className="pointer-events-none absolute top-0 h-10 sm:h-12 w-0.5 bg-white" style={{ left: `${total ? (t / total) * 100 : 0}%` }} />
+              <div className="pointer-events-none absolute top-0 h-10 sm:h-12 w-0.5 bg-white" style={{ left: `${fullTotal ? (Math.min(t, fullTotal) / fullTotal) * 100 : 0}%` }} />
             </div>
           </div>
         </main>

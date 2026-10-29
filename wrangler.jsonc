@@ -1,0 +1,14 @@
+{
+  // Cloudflare Workers settings. The Worker name here must match the name of the project in the Cloudflare dashboard.
+  "name": "videoengine",
+  "main": "./worker/index.ts",
+  "compatibility_date": "2026-10-26",
+  "assets": {
+    "directory": "./dist/",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  // Keep variables and secrets you add in the Cloudflare dashboard when a new version is deployed.
+  "keep_vars": true
+}
