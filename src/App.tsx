@@ -6,7 +6,7 @@ import { XFD, fillsFrame, moveFor, motionP, pose } from "./motion.ts";
 import type { Move } from "./motion.ts";
 import { drawCaption } from "./captions.ts";
 import { drawTitle } from "./title.ts";
-import { chapterList, fullDescription, hashtagLine, srtFile } from "./publish.ts";
+import { chapterList, publishPrompt, parseAnswer, srtFile } from "./publish.ts";
 import { duckFactor, levels, rmsActive, rmsAll } from "./mix.ts";
 
 type Fmt = "long" | "short";
@@ -472,7 +472,7 @@ const borrowVisuals = (list: Scene[]): Scene[] =>
 const SAVE_KEY = "vortex-project";
 type Saved = {
   v: 1; fmt: Fmt; res: number; fps: number; wpm: number; topic: string; tone: string; minutes: number; minSec: number;
-  scriptText: string; intro: string; source: Source; moving: boolean; caps: boolean; fit?: Fit; musicStyle?: MusicStyle; autoMusic?: boolean; balance?: boolean; leadSec?: number; outro?: string; introColor?: string; accent?: string;
+  scriptText: string; intro: string; source: Source; moving: boolean; caps: boolean; fit?: Fit; musicStyle?: MusicStyle; autoMusic?: boolean; balance?: boolean; leadSec?: number; outro?: string; introColor?: string; accent?: string; aiNotes?: string;
   vTitle: string; vDesc: string; vTags: string; thumbText: string;
   scenes: Omit<Scene, "clips" | "marks">[];
 };
@@ -808,6 +808,8 @@ export default function App() {
   const [vDesc, setVDesc] = useState(saved?.vDesc ?? "");
   const [vTags, setVTags] = useState(saved?.vTags ?? "");
   const [thumbText, setThumbText] = useState(saved?.thumbText ?? "");
+  const [aiNotes, setAiNotes] = useState(saved?.aiNotes ?? ""); // extra notes added to the prompt for any AI
+  const [aiAnswer, setAiAnswer] = useState(""); // the AI's answer, pasted back
   const [pinned, setPinned] = useState<string | null>(null); // pinned comment text (null = the suggested one)
   const [pubDone, setPubDone] = useState<Record<string, boolean>>({}); // YouTube settings you have ticked off
   const [thumbMb, setThumbMb] = useState<number | null>(null);
@@ -946,14 +948,14 @@ DELIVERY: voiceover
     const id = window.setTimeout(() => {
       try {
         const data: Saved = {
-          v: 1, fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, vTitle, vDesc, vTags, thumbText,
+          v: 1, fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, aiNotes, vTitle, vDesc, vTags, thumbText,
           scenes: scenes.map((s) => ({ id: s.id, title: s.title, text: s.text, onScreen: s.onScreen, visual: s.visual, duration: s.duration, palette: s.palette })),
         };
         localStorage.setItem(SAVE_KEY, JSON.stringify(data));
       } catch { /* storage full or blocked: skip */ }
     }, 800);
     return () => clearTimeout(id);
-  }, [fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, vTitle, vDesc, vTags, thumbText, scenes]);
+  }, [fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, aiNotes, vTitle, vDesc, vTags, thumbText, scenes]);
   useEffect(() => {
     if (!code) { setServer(NO_PROVIDERS); setServerMsg(""); return undefined; }
     const ctl = new AbortController();
@@ -1218,10 +1220,31 @@ DELIVERY: voiceover
   // Share: the phone's own share sheet (WhatsApp, Telegram, Drive, YouTube...). The video file is sent as it is; nothing is uploaded by this app.
   // Publish pack: everything YouTube asks for, prepared from the story and the real timings.
   const creditAt = vDesc.indexOf(CREDIT_HEAD.trim());
-  const descText = creditAt >= 0 ? vDesc.slice(0, creditAt) : vDesc;
   const creditText = creditAt >= 0 ? vDesc.slice(creditAt) : "";
   const chapters = fmt === "long" ? chapterList(scenes.map((x, i) => ({ title: x.title, start: starts[i] })), fullTotal) : [];
-  const finalDesc = fullDescription(descText, chapters, creditText, hashtagLine(vTags));
+  const promptText = publishPrompt({
+    wide: fmt === "long", tone, topic: topic.trim() || vTitle.trim(), notes: aiNotes, length: clock(fullTotal), credits: creditText, chapters,
+    scenes: scenes.filter((x) => x.text.trim()).map((x) => ({ start: clock(starts[scenes.indexOf(x)]), title: x.title, text: x.text })),
+  });
+  // Paste the AI's answer back: fills the title, description, tags, thumbnail text and pinned comment.
+  const fillFromAnswer = () => {
+    const a = parseAnswer(aiAnswer);
+    const got: string[] = [];
+    if (a.title) { setVTitle(a.title); got.push("title"); }
+    if (a.description) { setVDesc(withCredits(a.description, scenes)); got.push("description"); }
+    if (a.tags) { setVTags(a.tags); got.push("tags"); }
+    if (a.thumb) { setThumbText(a.thumb); got.push("thumbnail text"); }
+    if (a.pinned) { setPinned(a.pinned); got.push("pinned comment"); }
+    setMsg(got.length ? `Filled: ${got.join(", ")}. Read each one and edit if needed.` : "I could not find the headings (TITLE, DESCRIPTION, TAGS…) in that answer. Paste the AI's whole answer, or ask it to use the exact layout from the prompt.");
+  };
+  const addChapters = () => {
+    if (!chapters.length) { setMsg("Not enough for chapters yet. YouTube needs 3 or more, each 10 seconds or longer."); return; }
+    if (/^\s*\d{1,2}:\d{2}\s+\S/m.test(vDesc)) { setMsg("The description already has timestamps. Remove them first if you want these ones."); return; }
+    const at = vDesc.indexOf(CREDIT_HEAD.trim());
+    const head = (at >= 0 ? vDesc.slice(0, at) : vDesc).trim(), tail = at >= 0 ? vDesc.slice(at) : "";
+    setVDesc([head, `Chapters:\n${chapters.join("\n")}`, tail].filter(Boolean).join("\n\n"));
+    setMsg("Chapters added to the description.");
+  };
   const pinnedText = pinned ?? `What did you think of "${vTitle.trim() || "this video"}"? Tell us in the comments.`;
   const captionsEstimated = scenes.some((x) => x.text.trim() && !x.marks?.length);
   const downloadCaptions = () => {
@@ -1562,7 +1585,7 @@ DELIVERY: voiceover
     { ok: !minSec || total >= minSec, t: minSec ? `Length is at least ${clock(minSec)}` : "No minimum length set" },
     { ok: res >= 1080, t: "Resolution is 1080p or higher" },
     { ok: vTitle.length > 0 && vTitle.length <= 100, t: "Title is 1 to 100 characters" },
-    { ok: finalDesc.length > 0 && finalDesc.length <= 5000, t: "Description is written and under 5,000 characters" },
+    { ok: vDesc.trim().length > 0 && vDesc.length <= 5000, t: "Description is written and under 5,000 characters" },
     { ok: vTags.trim().length > 0 && vTags.length <= 500, t: "Tags added, under 500 characters" },
     { ok: fmt === "short" || chapters.length >= 3, t: "Chapters: 3 or more, each 10 seconds or longer" },
     { ok: !!voiceUrl || !!musicUrl, t: "Audio track attached" },
@@ -1784,37 +1807,47 @@ DELIVERY: voiceover
                 <p className="text-xs text-slate-500">Share opens your phone's share menu (WhatsApp, Telegram, Google Drive and more). Only the video file is sent, not the text. It goes straight from this device to the app you pick; this app does not upload or host it. Desktop browsers often cannot share files, so use Download there.</p>
               </div>
 
+              <div className="space-y-3 rounded-md border border-slate-800 p-3">
+                <h3 className="text-sm font-semibold">2. Write everything with any AI</h3>
+                <p className="text-xs text-slate-400">The app prepares one prompt from your script and scene times. Paste it into ChatGPT, Claude, Gemini or any AI, and it writes your title, description, tags, thumbnail text and pinned comment.</p>
+                <Field l="Notes for the AI (optional): channel name, links, language, call to action"><textarea className={inp} rows={2} value={aiNotes} onChange={(e) => setAiNotes(e.target.value)} placeholder="e.g. Channel: Bee Tales. Mention my newsletter." /></Field>
+                <button className={`${btn(true)} w-full`} onClick={() => void copyText(promptText, "Prompt")}>Copy prompt for AI</button>
+                <details className="text-xs text-slate-400">
+                  <summary className="cursor-pointer">Read the prompt</summary>
+                  <textarea className={`${inp} mt-2`} rows={10} readOnly value={promptText} />
+                </details>
+                <ol className="list-decimal space-y-1 pl-5 text-xs text-slate-400">
+                  <li>Tap Copy prompt for AI and paste it into your AI.</li>
+                  <li>Copy the AI's whole answer.</li>
+                  <li>Paste it below and tap Fill my boxes.</li>
+                </ol>
+                <Field l="The AI's answer"><textarea className={inp} rows={5} value={aiAnswer} onChange={(e) => setAiAnswer(e.target.value)} placeholder="Paste the AI's answer here" /></Field>
+                <button className={`${btn()} w-full`} disabled={!aiAnswer.trim()} onClick={fillFromAnswer}>Fill my boxes</button>
+              </div>
+
               <div className="space-y-2 rounded-md border border-slate-800 p-3">
-                <h3 className="text-sm font-semibold">2. Title</h3>
+                <h3 className="text-sm font-semibold">3. Title</h3>
                 <Field l={`Title (${vTitle.length}/100)`}><input className={inp} value={vTitle} onChange={(e) => setVTitle(e.target.value)} /></Field>
                 <button className={`${btn()} w-full`} disabled={!vTitle.trim()} onClick={() => void copyText(vTitle.trim(), "Title")}>Copy title</button>
               </div>
 
               <div className="space-y-2 rounded-md border border-slate-800 p-3">
-                <h3 className="text-sm font-semibold">3. Description</h3>
-                <Field l="Your description text (write or edit here)"><textarea className={inp} rows={5} value={vDesc} onChange={(e) => setVDesc(e.target.value)} /></Field>
-                <Field l={`Complete description to paste (${finalDesc.length}/5000)`}><textarea className={inp} rows={8} readOnly value={finalDesc} /></Field>
-                <button className={`${btn(true)} w-full`} disabled={!finalDesc} onClick={() => void copyText(finalDesc, "Description")}>Copy complete description</button>
-                <p className="text-xs text-slate-500">It adds the chapters, the stock footage credits and three hashtags to your text. Change your text above and the complete version updates.</p>
+                <h3 className="text-sm font-semibold">4. Description</h3>
+                <Field l={`Description (${vDesc.length}/5000)`}><textarea className={inp} rows={8} value={vDesc} onChange={(e) => setVDesc(e.target.value)} /></Field>
+                <button className={`${btn(true)} w-full`} disabled={!vDesc.trim()} onClick={() => void copyText(vDesc.trim(), "Description")}>Copy description</button>
+                {fmt === "long" && <button className={`${btn()} w-full`} onClick={addChapters}>Add chapters from my scenes</button>}
+                <p className="text-xs text-slate-500">Chapters use your scene names and the real timings. Skip this button if the AI already wrote the chapters.</p>
               </div>
 
-              {fmt === "long" && (
-                <div className="space-y-2 rounded-md border border-slate-800 p-3">
-                  <h3 className="text-sm font-semibold">4. Chapters</h3>
-                  {chapters.length ? <pre className="whitespace-pre-wrap text-xs text-slate-300">{chapters.join("\n")}</pre> : <p className="text-xs text-amber-300">Not enough for chapters yet. YouTube needs 3 or more, each 10 seconds or longer. Add or lengthen scenes in the Scenes tab.</p>}
-                  <p className="text-xs text-slate-500">Already included in the complete description above. They come from your scene names and the real timings, so rename scenes in the Scenes tab to change them.</p>
-                </div>
-              )}
-
               <div className="space-y-2 rounded-md border border-slate-800 p-3">
-                <h3 className="text-sm font-semibold">{fmt === "long" ? "5" : "4"}. Tags</h3>
+                <h3 className="text-sm font-semibold">5. Tags</h3>
                 <Field l={`Tags, separated by commas (${vTags.length}/500)`}><textarea className={inp} rows={3} value={vTags} onChange={(e) => setVTags(e.target.value)} placeholder="e.g. honey bee, nature, documentary" /></Field>
                 <button className={`${btn()} w-full`} disabled={!vTags.trim()} onClick={() => void copyText(vTags.trim(), "Tags")}>Copy tags</button>
                 <p className="text-xs text-slate-500">In YouTube Studio, tags are under “Show more”.</p>
               </div>
 
               <div className="space-y-2 rounded-md border border-slate-800 p-3">
-                <h3 className="text-sm font-semibold">{fmt === "long" ? "6" : "5"}. Thumbnail</h3>
+                <h3 className="text-sm font-semibold">6. Thumbnail</h3>
                 <Field l="Thumbnail text"><input className={inp} value={thumbText} onChange={(e) => setThumbText(e.target.value)} placeholder="3–5 words" /></Field>
                 <canvas ref={thumbRef} width={1280} height={720} className="w-full rounded-md" />
                 <button className={`${btn()} w-full`} onClick={grabFrame}>Use current preview frame</button>
@@ -1822,19 +1855,19 @@ DELIVERY: voiceover
               </div>
 
               <div className="space-y-2 rounded-md border border-slate-800 p-3">
-                <h3 className="text-sm font-semibold">{fmt === "long" ? "7" : "6"}. Captions file (subtitles)</h3>
+                <h3 className="text-sm font-semibold">7. Captions file (subtitles)</h3>
                 <button className={`${btn(true)} w-full`} disabled={!scenes.some((x) => x.text.trim())} onClick={downloadCaptions}>Download captions file (.srt)</button>
                 <p className="text-xs text-slate-500">{captionsEstimated ? "Timing is estimated, because the voiceover was not recorded by the app. " : "Timing matches your recorded voiceover. "}In YouTube Studio, open Subtitles, then Add language, then Upload file. The captions already in the picture stay as they are; this file lets viewers turn captions on and off.</p>
               </div>
 
               <div className="space-y-2 rounded-md border border-slate-800 p-3">
-                <h3 className="text-sm font-semibold">{fmt === "long" ? "8" : "7"}. Pinned comment</h3>
+                <h3 className="text-sm font-semibold">8. Pinned comment</h3>
                 <Field l="Post this as the first comment, then pin it"><textarea className={inp} rows={3} value={pinnedText} onChange={(e) => setPinned(e.target.value)} /></Field>
                 <button className={`${btn()} w-full`} onClick={() => void copyText(pinnedText, "Comment")}>Copy comment</button>
               </div>
 
               <div className="space-y-2 rounded-md border border-slate-800 p-3">
-                <h3 className="text-sm font-semibold">{fmt === "long" ? "9" : "8"}. Settings in YouTube (tick each when done)</h3>
+                <h3 className="text-sm font-semibold">9. Settings in YouTube (tick each when done)</h3>
                 {([
                   ["kids", "Audience: choose whether the video is made for kids."],
                   ["ai", "Altered content: if the voice or pictures look real but were made with AI, answer Yes. Check YouTube's current rules."],
