@@ -739,6 +739,7 @@ const btn = (p = false) => `rounded-md px-3 py-1.5 text-sm font-medium disabled:
 const Field = ({ l, children }: { l: string; children: ReactNode }) => (
   <label className="block"><span className="mb-1 block text-xs text-slate-400">{l}</span>{children}</label>
 );
+const PLACEHOLDER = "Paste a script in the Create tab and press Generate video.";
 const STEPS = ["Read script", "Voiceover and music", "Find visuals", "Render video"];
 
 export default function App() {
@@ -757,7 +758,7 @@ export default function App() {
   const [scenes, setScenes] = useState<Scene[]>(() =>
     saved
       ? saved.scenes.map((s) => ({ ...s, onCam: false, clips: [] }))
-      : [mkScene({ title: "Hook", text: "Paste a script in the Create tab and press Generate video.", onScreen: "", visual: "" }, 0, 150)]);
+      : [mkScene({ title: "Hook", text: PLACEHOLDER, onScreen: "", visual: "" }, 0, 150)]);
   const [selId, setSelId] = useState("");
   const [playing, setPlaying] = useState(false);
   const [t, setT] = useState(0);
@@ -1222,6 +1223,7 @@ DELIVERY: voiceover
   const creditAt = vDesc.indexOf(CREDIT_HEAD.trim());
   const creditText = creditAt >= 0 ? vDesc.slice(creditAt) : "";
   const chapters = fmt === "long" ? chapterList(scenes.map((x, i) => ({ title: x.title, start: starts[i] })), fullTotal) : [];
+  const noScript = scenes.every((x) => !x.text.trim() || x.text.trim() === PLACEHOLDER); // only the starter scene: nothing real to write about yet
   const promptText = publishPrompt({
     wide: fmt === "long", tone, topic: topic.trim() || vTitle.trim(), notes: aiNotes, length: clock(fullTotal), credits: creditText, chapters,
     scenes: scenes.filter((x) => x.text.trim()).map((x) => ({ start: clock(starts[scenes.indexOf(x)]), title: x.title, text: x.text })),
@@ -1811,7 +1813,8 @@ DELIVERY: voiceover
                 <h3 className="text-sm font-semibold">2. Write everything with any AI</h3>
                 <p className="text-xs text-slate-400">The app prepares one prompt from your script and scene times. Paste it into ChatGPT, Claude, Gemini or any AI, and it writes your title, description, tags, thumbnail text and pinned comment.</p>
                 <Field l="Notes for the AI (optional): channel name, links, language, call to action"><textarea className={inp} rows={2} value={aiNotes} onChange={(e) => setAiNotes(e.target.value)} placeholder="e.g. Channel: Bee Tales. Mention my newsletter." /></Field>
-                <button className={`${btn(true)} w-full`} onClick={() => void copyText(promptText, "Prompt")}>Copy prompt for AI</button>
+                {noScript && <p className="rounded-md border border-amber-500/40 p-2 text-xs text-amber-300">There is no script in the app yet, so the AI would have nothing to write about. In the Create tab, paste your script and tap “Load script into scenes only” (or Generate video), then come back here.</p>}
+                <button className={`${btn(true)} w-full`} disabled={noScript} onClick={() => void copyText(promptText, "Prompt")}>Copy prompt for AI</button>
                 <details className="text-xs text-slate-400">
                   <summary className="cursor-pointer">Read the prompt</summary>
                   <textarea className={`${inp} mt-2`} rows={10} readOnly value={promptText} />
