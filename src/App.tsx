@@ -6,6 +6,7 @@ import { XFD, fillsFrame, moveFor, motionP, pose } from "./motion.ts";
 import type { Move } from "./motion.ts";
 import { drawCaption } from "./captions.ts";
 import { drawTitle } from "./title.ts";
+import { chapterList, fullDescription, hashtagLine, srtFile } from "./publish.ts";
 import { duckFactor, levels, rmsActive, rmsAll } from "./mix.ts";
 
 type Fmt = "long" | "short";
@@ -807,6 +808,8 @@ export default function App() {
   const [vDesc, setVDesc] = useState(saved?.vDesc ?? "");
   const [vTags, setVTags] = useState(saved?.vTags ?? "");
   const [thumbText, setThumbText] = useState(saved?.thumbText ?? "");
+  const [pinned, setPinned] = useState<string | null>(null); // pinned comment text (null = the suggested one)
+  const [pubDone, setPubDone] = useState<Record<string, boolean>>({}); // YouTube settings you have ticked off
   const [thumbMb, setThumbMb] = useState<number | null>(null);
   const [thumbClip, setThumbClip] = useState("");
   const [thumbBump, setThumbBump] = useState(0);
@@ -1213,7 +1216,35 @@ DELIVERY: voiceover
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   };
   // Share: the phone's own share sheet (WhatsApp, Telegram, Drive, YouTube...). The video file is sent as it is; nothing is uploaded by this app.
-  const shareText = [vTitle.trim(), vDesc.trim()].filter(Boolean).join("\n\n");
+  // Publish pack: everything YouTube asks for, prepared from the story and the real timings.
+  const creditAt = vDesc.indexOf(CREDIT_HEAD.trim());
+  const descText = creditAt >= 0 ? vDesc.slice(0, creditAt) : vDesc;
+  const creditText = creditAt >= 0 ? vDesc.slice(creditAt) : "";
+  const chapters = fmt === "long" ? chapterList(scenes.map((x, i) => ({ title: x.title, start: starts[i] })), fullTotal) : [];
+  const finalDesc = fullDescription(descText, chapters, creditText, hashtagLine(vTags));
+  const pinnedText = pinned ?? `What did you think of "${vTitle.trim() || "this video"}"? Tell us in the comments.`;
+  const captionsEstimated = scenes.some((x) => x.text.trim() && !x.marks?.length);
+  const downloadCaptions = () => {
+    const cues: { t0: number; t1: number; text: string }[] = [];
+    scenes.forEach((x, k) => cuesOf(x).forEach((c) => {
+      const nCh = Math.max(1, Math.ceil(c.ws.length / 7)), size = Math.ceil(c.ws.length / nCh);
+      for (let j = 0; j < nCh; j++) {
+        const a = c.t0 + ((c.t1 - c.t0) * j) / nCh, b = c.t0 + ((c.t1 - c.t0) * (j + 1)) / nCh;
+        cues.push({ t0: starts[k] + a, t1: starts[k] + b, text: c.ws.slice(j * size, j * size + size).join(" ") });
+      }
+    }));
+    const text = srtFile(cues);
+    if (!text) { setMsg("There is no narration text to make captions from."); return; }
+    const url = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
+    const a = document.createElement("a");
+    a.href = url; a.download = "captions.srt"; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    setMsg(`Captions file saved.${captionsEstimated ? " Timing is estimated because the voiceover was not recorded by the app." : ""}`);
+  };
+  const copyText = async (text: string, what: string) => {
+    try { await navigator.clipboard.writeText(text); setMsg(`${what} copied.`); }
+    catch { setMsg("Could not copy automatically. Press and hold the text to select and copy it by hand."); }
+  };
   const shareVideo = async () => {
     if (!file) { setMsg("Render the video first, then share it."); return; }
     const f = new File([file.blob], file.name, { type: file.blob.type || "video/webm" });
@@ -1221,16 +1252,12 @@ DELIVERY: voiceover
       if (typeof navigator.canShare === "function" && navigator.canShare({ files: [f] })) {
         // File only. Sending text with the file makes apps such as Messenger send just the text and drop the video.
         await navigator.share({ files: [f] });
-        setMsg("Shared. The title and description are not sent with the video. Use “Copy title and description” to paste them.");
-      } else setMsg("This browser cannot share files. Download the video, then attach it in the app you want. “Copy title and description” helps with the text.");
+        setMsg("Shared. The title and description are not sent with the video. Use the Copy buttons in the Publish tab for those.");
+      } else setMsg("This browser cannot share files. Download the video, then attach it in the app you want. The Copy buttons in the Publish tab help with the text.");
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") return; // you closed the share sheet
       setMsg("Sharing failed. The file may be too big for that app. Download it and attach it by hand instead.");
     }
-  };
-  const copyShareText = async () => {
-    try { await navigator.clipboard.writeText(shareText); setMsg("Title and description copied."); }
-    catch { setMsg("Couldn't copy automatically. Select the text in the boxes above and copy it by hand."); }
   };
   const makeBgMusic = async () => {
     setMakingMusic(true); setMsg("Making background music (a few seconds)…");
@@ -1248,13 +1275,11 @@ DELIVERY: voiceover
   };
 
   const fillMeta = (m: Meta, list: Scene[]) => {
-    let at = 0;
-    const chapters = list.map((s) => { const l = `${clock(at)} ${s.title}`; at += s.duration; return l; }).join("\n");
     setVTitle(m.title || topic.trim() || list[0]?.title || "");
     setIntro(m.intro || list[0]?.onScreen || firstWords(m.title || topic.trim() || list[0]?.text || "", 7));
     setThumbText(m.thumb || firstWords(m.title || topic.trim() || list[0]?.title || "", 4));
     setVTags((m.tags || []).join(", "));
-    setVDesc([m.description, fmt === "long" && list.length >= 3 ? chapters : ""].filter(Boolean).join("\n\n"));
+    setVDesc(m.description || ""); // chapters are added by the Publish pack from the real timings
   };
   const loadScript = () => {
     const p = parseScript(scriptText);
@@ -1537,9 +1562,9 @@ DELIVERY: voiceover
     { ok: !minSec || total >= minSec, t: minSec ? `Length is at least ${clock(minSec)}` : "No minimum length set" },
     { ok: res >= 1080, t: "Resolution is 1080p or higher" },
     { ok: vTitle.length > 0 && vTitle.length <= 100, t: "Title is 1 to 100 characters" },
-    { ok: vDesc.length <= 5000, t: "Description is under 5,000 characters" },
-    { ok: vTags.length <= 500, t: "Tags are under 500 characters" },
-    { ok: fmt === "short" || (scenes.length >= 3 && scenes.every((s) => s.duration >= 10)), t: "Chapters: 3 or more, each 10 seconds or longer" },
+    { ok: finalDesc.length > 0 && finalDesc.length <= 5000, t: "Description is written and under 5,000 characters" },
+    { ok: vTags.trim().length > 0 && vTags.length <= 500, t: "Tags added, under 500 characters" },
+    { ok: fmt === "short" || chapters.length >= 3, t: "Chapters: 3 or more, each 10 seconds or longer" },
     { ok: !!voiceUrl || !!musicUrl, t: "Audio track attached" },
     { ok: caps, t: "Captions burned into the video" },
     { ok: thumbMb !== null && thumbMb < 2, t: "Thumbnail 1280×720, under 2 MB" },
@@ -1741,25 +1766,89 @@ DELIVERY: voiceover
             </>)}
 
             {tab === "publish" && (<>
-              <Field l={`Title (${vTitle.length}/100)`}><input className={inp} value={vTitle} onChange={(e) => setVTitle(e.target.value)} /></Field>
-              <Field l={`Description (${vDesc.length}/5000)`}><textarea className={inp} rows={5} value={vDesc} onChange={(e) => setVDesc(e.target.value)} /></Field>
-              <Field l="Thumbnail text"><input className={inp} value={thumbText} onChange={(e) => setThumbText(e.target.value)} placeholder="3–5 words" /></Field>
-              <canvas ref={thumbRef} width={1280} height={720} className="w-full rounded-md" />
-              <button className={btn()} onClick={grabFrame}>Use current preview frame</button>
-              <button className={btn()} onClick={() => void downloadThumb()}>Download thumbnail</button>
-              <div className="space-y-2 border-t border-slate-800 pt-4">
-                <h3 className="text-sm font-semibold">Share</h3>
+              <div className="space-y-2 rounded-md border border-slate-800 p-3">
+                <h3 className="text-sm font-semibold">Publish pack</h3>
+                <p className="text-xs text-slate-400">Everything YouTube asks for, in the order you meet it. Copy each item into YouTube. {checks.filter((c) => c.ok).length} of {checks.length} checks passed.</p>
+                <ul className="space-y-1 text-xs">
+                  {checks.map((c) => <li key={c.t} className={c.ok ? "text-emerald-400" : "text-slate-500"}>{c.ok ? "✓" : "○"} {c.t}</li>)}
+                </ul>
+              </div>
+
+              <div className="space-y-2 rounded-md border border-slate-800 p-3">
+                <h3 className="text-sm font-semibold">1. Video file</h3>
                 {file ? <>
                   <a href={file.url} download={file.name} className={`${btn(true)} block w-full text-center`}>Download {file.name.split(".").pop()?.toUpperCase()} video ({file.mb.toFixed(1)} MB)</a>
                   <a href={file.url} target="_blank" rel="noreferrer" className="block text-center text-xs text-violet-300 underline">Download not starting? Open the video, then use the ⋮ menu → Download</a>
                 </> : <button className={`${btn(true)} w-full`} disabled>Download video (render it first)</button>}
                 <button className={`${btn()} w-full`} disabled={!file} onClick={() => void shareVideo()}>{file ? `Share video (${file.name.split(".").pop()?.toUpperCase()}, ${file.mb.toFixed(1)} MB)` : "Share video (render it first)"}</button>
-                <button className={`${btn()} w-full`} disabled={!shareText} onClick={() => void copyShareText()}>Copy title and description</button>
-                <p className="text-xs text-slate-500">Opens your phone's share menu so you can send the video to WhatsApp, Telegram, Google Drive and more. Only the video file is sent, not the title or description (use the copy button for those). It goes straight from this device to the app you pick; this app does not upload or host it. Desktop browsers often cannot share files, so use Download there.</p>
+                <p className="text-xs text-slate-500">Share opens your phone's share menu (WhatsApp, Telegram, Google Drive and more). Only the video file is sent, not the text. It goes straight from this device to the app you pick; this app does not upload or host it. Desktop browsers often cannot share files, so use Download there.</p>
               </div>
-              <ul className="space-y-1 text-xs">
-                {checks.map((c) => <li key={c.t} className={c.ok ? "text-emerald-400" : "text-slate-500"}>{c.ok ? "✓" : "○"} {c.t}</li>)}
-              </ul>
+
+              <div className="space-y-2 rounded-md border border-slate-800 p-3">
+                <h3 className="text-sm font-semibold">2. Title</h3>
+                <Field l={`Title (${vTitle.length}/100)`}><input className={inp} value={vTitle} onChange={(e) => setVTitle(e.target.value)} /></Field>
+                <button className={`${btn()} w-full`} disabled={!vTitle.trim()} onClick={() => void copyText(vTitle.trim(), "Title")}>Copy title</button>
+              </div>
+
+              <div className="space-y-2 rounded-md border border-slate-800 p-3">
+                <h3 className="text-sm font-semibold">3. Description</h3>
+                <Field l="Your description text (write or edit here)"><textarea className={inp} rows={5} value={vDesc} onChange={(e) => setVDesc(e.target.value)} /></Field>
+                <Field l={`Complete description to paste (${finalDesc.length}/5000)`}><textarea className={inp} rows={8} readOnly value={finalDesc} /></Field>
+                <button className={`${btn(true)} w-full`} disabled={!finalDesc} onClick={() => void copyText(finalDesc, "Description")}>Copy complete description</button>
+                <p className="text-xs text-slate-500">It adds the chapters, the stock footage credits and three hashtags to your text. Change your text above and the complete version updates.</p>
+              </div>
+
+              {fmt === "long" && (
+                <div className="space-y-2 rounded-md border border-slate-800 p-3">
+                  <h3 className="text-sm font-semibold">4. Chapters</h3>
+                  {chapters.length ? <pre className="whitespace-pre-wrap text-xs text-slate-300">{chapters.join("\n")}</pre> : <p className="text-xs text-amber-300">Not enough for chapters yet. YouTube needs 3 or more, each 10 seconds or longer. Add or lengthen scenes in the Scenes tab.</p>}
+                  <p className="text-xs text-slate-500">Already included in the complete description above. They come from your scene names and the real timings, so rename scenes in the Scenes tab to change them.</p>
+                </div>
+              )}
+
+              <div className="space-y-2 rounded-md border border-slate-800 p-3">
+                <h3 className="text-sm font-semibold">{fmt === "long" ? "5" : "4"}. Tags</h3>
+                <Field l={`Tags, separated by commas (${vTags.length}/500)`}><textarea className={inp} rows={3} value={vTags} onChange={(e) => setVTags(e.target.value)} placeholder="e.g. honey bee, nature, documentary" /></Field>
+                <button className={`${btn()} w-full`} disabled={!vTags.trim()} onClick={() => void copyText(vTags.trim(), "Tags")}>Copy tags</button>
+                <p className="text-xs text-slate-500">In YouTube Studio, tags are under “Show more”.</p>
+              </div>
+
+              <div className="space-y-2 rounded-md border border-slate-800 p-3">
+                <h3 className="text-sm font-semibold">{fmt === "long" ? "6" : "5"}. Thumbnail</h3>
+                <Field l="Thumbnail text"><input className={inp} value={thumbText} onChange={(e) => setThumbText(e.target.value)} placeholder="3–5 words" /></Field>
+                <canvas ref={thumbRef} width={1280} height={720} className="w-full rounded-md" />
+                <button className={`${btn()} w-full`} onClick={grabFrame}>Use current preview frame</button>
+                <button className={`${btn(true)} w-full`} onClick={() => void downloadThumb()}>Download thumbnail</button>
+              </div>
+
+              <div className="space-y-2 rounded-md border border-slate-800 p-3">
+                <h3 className="text-sm font-semibold">{fmt === "long" ? "7" : "6"}. Captions file (subtitles)</h3>
+                <button className={`${btn(true)} w-full`} disabled={!scenes.some((x) => x.text.trim())} onClick={downloadCaptions}>Download captions file (.srt)</button>
+                <p className="text-xs text-slate-500">{captionsEstimated ? "Timing is estimated, because the voiceover was not recorded by the app. " : "Timing matches your recorded voiceover. "}In YouTube Studio, open Subtitles, then Add language, then Upload file. The captions already in the picture stay as they are; this file lets viewers turn captions on and off.</p>
+              </div>
+
+              <div className="space-y-2 rounded-md border border-slate-800 p-3">
+                <h3 className="text-sm font-semibold">{fmt === "long" ? "8" : "7"}. Pinned comment</h3>
+                <Field l="Post this as the first comment, then pin it"><textarea className={inp} rows={3} value={pinnedText} onChange={(e) => setPinned(e.target.value)} /></Field>
+                <button className={`${btn()} w-full`} onClick={() => void copyText(pinnedText, "Comment")}>Copy comment</button>
+              </div>
+
+              <div className="space-y-2 rounded-md border border-slate-800 p-3">
+                <h3 className="text-sm font-semibold">{fmt === "long" ? "9" : "8"}. Settings in YouTube (tick each when done)</h3>
+                {([
+                  ["kids", "Audience: choose whether the video is made for kids."],
+                  ["ai", "Altered content: if the voice or pictures look real but were made with AI, answer Yes. Check YouTube's current rules."],
+                  ["cat", "Category and language."],
+                  ["list", "Playlist (optional)."],
+                  ["end", "End screen: add a Subscribe button and a next video for the last 5 to 20 seconds."],
+                  ["vis", "Visibility: public, private or scheduled."],
+                ] as const).map(([k, t]) => (
+                  <label key={k} className="flex items-start gap-2 text-xs text-slate-300">
+                    <input type="checkbox" className="mt-0.5" checked={!!pubDone[k]} onChange={(e) => setPubDone((o) => ({ ...o, [k]: e.target.checked }))} />
+                    <span>{t}</span>
+                  </label>
+                ))}
+              </div>
             </>)}
           </div>
         </aside>
