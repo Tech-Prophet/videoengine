@@ -64,7 +64,7 @@ export function publishPrompt(i: PromptIn): string {
     "Three other title options, one per line.",
     "",
     "### DESCRIPTION",
-    `Under 5,000 characters. The first two lines are the hook, because that is all people see before \"Show more\". Use the main keywords naturally. Then a short summary of the story${i.wide && i.chapters.length ? ', then the heading \"Chapters:\" followed by the chapter timestamps exactly as given above' : ""}, then one short line asking people to subscribe and comment. End with 3 hashtags.${i.credits.trim() ? ` Keep these credit lines at the very end, exactly as written:\n${i.credits.trim()}` : ""}`,
+    `Under 5,000 characters. The first two lines are the hook, because that is all people see before "Show more". Use the main keywords naturally. Then a short summary of the story${i.wide && i.chapters.length ? ', then the heading "Chapters:" followed by the chapter timestamps exactly as given above' : ""}, then one short line asking people to subscribe and comment. End with 3 hashtags.${i.credits.trim() ? ` Keep these credit lines at the very end, exactly as written:\n${i.credits.trim()}` : ""}`,
     "",
     "### TAGS",
     "10 to 15 tags separated by commas, under 500 characters in total, most important first.",
