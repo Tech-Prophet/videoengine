@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { MUSIC_STYLES } from "./music.ts";
 import { makeMusicOffThread } from "./musicAsync.ts";
@@ -107,7 +107,7 @@ const MIME_CANDIDATES = [
 
 /* ---------- SCRIPT PARSER ---------- */
 const GENERIC = /^(scene|part|section|segment|hook|intro|introduction|outro|conclusion|cta|call to action)\s*\d*$/i;
-const TS = /[(\[]?\s*\d{1,2}:\d{2}(?:\s*(?:-|–|—|to)\s*\d{1,2}:\d{2})?\s*[)\]]?/gi;
+const TS = /[([]?\s*\d{1,2}:\d{2}(?:\s*(?:-|–|—|to)\s*\d{1,2}:\d{2})?\s*[)\]]?/gi;
 const SCENE_RE = /^(?:scene|section|part|segment)\s*(?:\d+\s*[:.\-–—)]?|[:\-–—])\s*(.*)$/i;
 const ON_RE = /^(?:on[- ]?screen(?: text)?|screen text|text on screen)\s*:\s*(.+)$/i;
 const VIS_RE = /^(?:visual|b-?roll|image|stock (?:photo|image))\s*:\s*(.+)$/i;
@@ -780,8 +780,11 @@ export default function App() {
   const findPage = useRef<Record<string, number>>({}); // per scene: which page of stock results "Find and add more" is on
   const [msg, setMsg] = useState("");
   const [code, setCode] = useState<string>(() => { try { return localStorage.getItem("vortex-access") || ""; } catch { return ""; } });
-  const [server, setServer] = useState(NO_PROVIDERS);
-  const [serverMsg, setServerMsg] = useState("");
+  const [serverRaw, setServer] = useState(NO_PROVIDERS);
+  const [serverMsgRaw, setServerMsg] = useState("");
+  // With no access code there is nothing to report, so these are worked out here instead of being reset from inside an effect.
+  const server = code ? serverRaw : NO_PROVIDERS;
+  const serverMsg = code ? serverMsgRaw : "";
   // Each value is the access code when that provider has a key on the server, otherwise "".
   const keys = { pixabay: server.pixabay ? code : "", pexels: server.pexels ? code : "", voice: server.voice ? code : "" };
   const [oaVoice, setOaVoice] = useState("alloy");
@@ -847,7 +850,7 @@ export default function App() {
   const previewLong = typeof window !== "undefined" && window.innerWidth >= 1024 ? 1280 : 854;
   const ps = exporting ? 1 : Math.min(1, previewLong / Math.max(W, H));
   const cw = Math.max(2, Math.round((W * ps) / 2) * 2), ch = Math.max(2, Math.round((H * ps) / 2) * 2);
-  const lv = levels(voiceRms, musicRms);
+  const lv = levels(voiceUrl ? voiceRms : null, musicUrl ? musicRms : null); // loudness only counts while its audio file exists
   const voiceGain = balance ? voiceVol * lv.voice : voiceVol;
   const musicGain = balance ? lv.music : musicVol;
   const sel = scenes.find((s) => s.id === selId) ?? scenes[0];
@@ -858,7 +861,8 @@ export default function App() {
   const fullTotal = total + endExtra;
   const liveScenes = useMemo(() => (endExtra ? scenes.map((x, k) => (k === scenes.length - 1 ? { ...x, duration: x.duration + endExtra } : x)) : scenes), [scenes, endExtra]);
   const live = useRef<Live>({ scenes: liveScenes, starts, total: total + endExtra, fit, caps, W: cw, H: ch, intro, voiceVol: voiceGain, musicVol: musicGain, duck: balance, lead: leadUsed, tail: endExtra, outro, introColor, accent, fps });
-  live.current = { scenes: liveScenes, starts, total: total + endExtra, fit, caps, W: cw, H: ch, intro, voiceVol: voiceGain, musicVol: musicGain, duck: balance, lead: leadUsed, tail: endExtra, outro, introColor, accent, fps };
+  // Kept up to date after every render (the timer and the exporter read it between renders).
+  useLayoutEffect(() => { live.current = { scenes: liveScenes, starts, total: total + endExtra, fit, caps, W: cw, H: ch, intro, voiceVol: voiceGain, musicVol: musicGain, duck: balance, lead: leadUsed, tail: endExtra, outro, introColor, accent, fps }; });
 
   const totalWords = Math.round(minutes * wpm);
   const nScenes = fmt === "short" ? 4 : Math.max(6, Math.min(16, Math.round(minutes * 2)));
@@ -962,7 +966,7 @@ DELIVERY: voiceover
     return () => clearTimeout(id);
   }, [fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, aiNotes, vTitle, vDesc, vTags, thumbText, scenes]);
   useEffect(() => {
-    if (!code) { setServer(NO_PROVIDERS); setServerMsg(""); return undefined; }
+    if (!code) return undefined;
     const ctl = new AbortController();
     const id = window.setTimeout(async () => {
       try {
@@ -979,6 +983,7 @@ DELIVERY: voiceover
   }, [code]);
 
   // Keeps the Pexels/Pixabay source line in the description in step with the visuals actually used.
+  // oxlint-disable-next-line react/set-state-in-effect -- the description is text the user can edit, so the credit lines are merged into it whenever the visuals change
   useEffect(() => { setVDesc((d) => withCredits(d, scenes)); }, [scenes]);
 
   useEffect(() => {
@@ -1090,7 +1095,6 @@ DELIVERY: voiceover
     if (!musicUrl) {
       const old = tracks.current.music; // music was removed: stop it and empty the player
       if (old) { old.el.pause(); old.el.removeAttribute("src"); }
-      setMusicRms(null);
       return;
     }
     if (skipMeasure.current.music) skipMeasure.current.music = false; else void measure(musicUrl, false).then(setMusicRms);
@@ -1100,7 +1104,7 @@ DELIVERY: voiceover
   useEffect(() => () => { if (musicUrl.startsWith("blob:")) URL.revokeObjectURL(musicUrl); }, [musicUrl]);
   useEffect(() => () => { if (voiceUrl.startsWith("blob:")) URL.revokeObjectURL(voiceUrl); }, [voiceUrl]);
   useEffect(() => {
-    if (!voiceUrl) { setVoiceRms(null); return; }
+    if (!voiceUrl) return;
     if (skipMeasure.current.voice) skipMeasure.current.voice = false; else void measure(voiceUrl, true).then(setVoiceRms);
     const el = track("voice").el;
     el.src = voiceUrl;
@@ -1600,8 +1604,10 @@ DELIVERY: voiceover
   };
   useEffect(() => {
     if (!autoRender) return;
+    // oxlint-disable-next-line react/set-state-in-effect -- one-shot trigger: Generate video sets autoRender, and this effect starts the render with the freshly updated state, then clears it
     setAutoRender(false);
     setTimeout(() => { void exportVideo(); }, 800);
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- must fire only when autoRender turns on; exportVideo is a new function every render
   }, [autoRender]);
 
   const checks = [

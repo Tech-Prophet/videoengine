@@ -3,6 +3,9 @@
   "plugins": ["react", "typescript", "oxc"],
   "rules": {
     "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
+    "react/only-export-components": ["warn", { "allowConstantExport": true }],
+    // Off on purpose: the "impure function during render" rule flags performance.now() in App.tsx, but every one of those calls
+    // is inside an effect (the playback timer) or the export function, which run after render, never while rendering.
+    "react/purity": "off"
   }
 }
