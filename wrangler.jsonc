@@ -10,5 +10,8 @@
 "run_worker_first": ["/api/*"]
 },
 // Keep variables and secrets you add in the Cloudflare dashboard when a new version is deployed.
-"keep_vars": true
+"keep_vars": true,
+// Branch builds in Cloudflare run `npx wrangler preview`, which refuses to start without this block. It can stay empty:
+// assets and settings above are reused. Production builds from the main branch do not use it.
+"previews": {}
 }
