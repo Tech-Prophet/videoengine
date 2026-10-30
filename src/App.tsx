@@ -244,22 +244,25 @@ const orient = (f: Fmt) => (f === "long" ? "landscape" : "portrait");
 
 async function stockImages(key: string, groups: { q: string; cap: number }[], f: Fmt, n: number, page = 1): Promise<string[]> {
   const seen = new Set<number>(), urls: string[] = [];
+  let failed = ""; // remembered, and reported below only if nothing at all could be found
   if (key) {
     for (const g of groups) {
       if (!g.q || urls.length >= n) continue;
       try {
         const r = await apiStock(`provider=pixabay&kind=photos&q=${encodeURIComponent(g.q)}&orientation=${orient(f)}&per_page=${Math.min(50, n + 6)}&page=${page}`, key);
-        if (!r.ok) throw new Error("Pixabay request failed. Check the access code and the server keys.");
+        if (!r.ok) { failed = "Pixabay request failed. Check the access code and the server keys."; continue; }
         let taken = 0;
         for (const p of (await r.json()).hits ?? []) {
           if (urls.length >= n || taken >= g.cap) break;
           if (seen.has(p.id)) continue;
           seen.add(p.id); taken++; urls.push(p.largeImageURL as string);
         }
-      } catch { /* fall back to placeholder photos below */ }
+      } catch { /* network error: try the next search */ }
     }
   }
-  return (await Promise.all(urls.map(fetchPhoto))).filter((u): u is string => !!u);
+  const got = (await Promise.all(urls.map(fetchPhoto))).filter((u): u is string => !!u);
+  if (!got.length && failed) throw new Error(failed);
+  return got;
 }
 
 async function stockVideos(key: string, groups: { q: string; cap: number }[], n: number, quality: "medium" | "small", page = 1): Promise<string[]> {
@@ -992,6 +995,21 @@ DELIVERY: voiceover
       }
       m[c.url] = el;
     }));
+    // Free pictures and clips that no scene uses any more (removed, replaced or regenerated). Clips can be shared
+    // between scenes, so only addresses that no scene refers to are released. Stock videos are whole files in memory.
+    const used = new Set(scenes.flatMap((s) => s.clips.map((c) => c.url)));
+    for (const u of Object.keys(m)) {
+      if (used.has(u)) continue;
+      const el = m[u];
+      if (el instanceof HTMLVideoElement) {
+        el.pause();
+        const node = clipNodes.current.get(el);
+        if (node) { try { node.disconnect(); } catch { /* already disconnected */ } clipNodes.current.delete(el); }
+        el.removeAttribute("src"); el.load();
+      }
+      delete m[u];
+      if (u.startsWith("blob:")) URL.revokeObjectURL(u);
+    }
   }, [scenes]);
 
   useEffect(() => {
@@ -1077,6 +1095,9 @@ DELIVERY: voiceover
     if (skipMeasure.current.music) skipMeasure.current.music = false; else void measure(musicUrl, false).then(setMusicRms);
     const T = track("music"); T.el.src = musicUrl; T.el.loop = true;
   }, [musicUrl]);
+  // When the music or voice file is replaced or removed, release the old one from memory.
+  useEffect(() => () => { if (musicUrl.startsWith("blob:")) URL.revokeObjectURL(musicUrl); }, [musicUrl]);
+  useEffect(() => () => { if (voiceUrl.startsWith("blob:")) URL.revokeObjectURL(voiceUrl); }, [voiceUrl]);
   useEffect(() => {
     if (!voiceUrl) { setVoiceRms(null); return; }
     if (skipMeasure.current.voice) skipMeasure.current.voice = false; else void measure(voiceUrl, true).then(setVoiceRms);
