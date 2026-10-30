@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { makeMusic, MUSIC_STYLES } from "./music.ts";
+import { MUSIC_STYLES } from "./music.ts";
+import { makeMusicOffThread } from "./musicAsync.ts";
 import type { MusicStyle } from "./music.ts";
 import { XFD, fillsFrame, moveFor, motionP, pose } from "./motion.ts";
 import type { Move } from "./motion.ts";
@@ -1310,7 +1311,7 @@ DELIVERY: voiceover
     await new Promise((r) => setTimeout(r, 50)); // lets the message show before the work starts
     try {
       const sr = 22050;
-      setGeneratedMusic(makeMusic(musicStyle, sr), sr);
+      setGeneratedMusic(await makeMusicOffThread(musicStyle, sr), sr);
       setMsg("Background music added. It loops under the whole video. Set its volume below.");
     } catch { setMsg("Could not make the music on this device."); }
     setMakingMusic(false);
@@ -1412,7 +1413,7 @@ DELIVERY: voiceover
       if (autoMusic && !musicUrl) {
         setMsg("Making background music…");
         await new Promise((res) => setTimeout(res, 50));
-        try { const sr = 22050; setGeneratedMusic(makeMusic(musicStyle, sr), sr); note += " Background music added."; }
+        try { const sr = 22050; setGeneratedMusic(await makeMusicOffThread(musicStyle, sr), sr); note += " Background music added."; }
         catch { note += " Could not make background music on this device."; }
       }
       if (!keys.voice && !voiceUrl) note += " No voiceover was added because the server voice is not connected (enter the access code under Server access).";
