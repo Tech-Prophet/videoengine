@@ -74,6 +74,13 @@ tailwindcss -c tailwind.config.cjs -i tailwind.input.css -o src/tailwind.css --m
 
 Skipping this step leaves new class names unstyled. Plain CSS (spacing and phone rules) lives in `src/index.css` and needs no regeneration.
 
+## Security notes
+
+- Choose a long, random `ACCESS_CODE`. After 10 wrong codes from one address in 10 minutes, that address is refused for the rest of the window. The count is kept in each server instance's memory, so it slows guessing but does not replace a strong code.
+- API answers are sent with `Cache-Control: no-store`.
+- `public/_headers` adds browser security headers to the web page. Its Content-Security-Policy starts in report-only mode. After one full run (Generate, voiceover, camera, Export) with no CSP messages in the browser console, rename `Content-Security-Policy-Report-Only` to `Content-Security-Policy` in that file to enforce it.
+- `npm run build` type-checks the app and, in strict mode, the server code (`server/`, `worker/`, `functions/`, `netlify/`).
+
 ## Known limits
 
 - Export records in real time, so the tab must stay open and in front for the full length of the video. The app asks the browser for MP4 first (best for sharing and uploading) and falls back to WebM when the browser cannot record MP4. The download button shows which one you got. MP4 recorded this way is a streaming-style MP4; it plays and uploads on common apps, but some editors may show an unknown length.

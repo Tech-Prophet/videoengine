@@ -16,7 +16,7 @@ export default {
     if (path === "/api/status") return status(request, vars);
     if (path === "/api/tts") return tts(request, vars);
     if (path === "/api/stock") return stock(request, vars);
-    if (path.startsWith("/api/")) return new Response(JSON.stringify({ error: "Unknown endpoint." }), { status: 404, headers: { "content-type": "application/json" } });
+    if (path.startsWith("/api/")) return new Response(JSON.stringify({ error: "Unknown endpoint." }), { status: 404, headers: { "content-type": "application/json", "cache-control": "no-store" } });
     return env.ASSETS ? env.ASSETS.fetch(request) : new Response("Not found", { status: 404 });
   },
 };

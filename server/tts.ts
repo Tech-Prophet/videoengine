@@ -1,4 +1,4 @@
-import { guard, json, type Env } from "./shared.ts";
+import { guard, json, NO_STORE, type Env } from "./shared.ts";
 
 const VOICES = ["alloy", "nova", "onyx", "echo", "shimmer", "fable"]; // OpenAI voices
 // Cloudflare: "melo" = MeloTTS (one female voice, cheapest on the free allowance). The rest are Deepgram Aura-1 speakers.
@@ -22,7 +22,7 @@ export function voiceProvider(env: Env): VoiceProvider {
   return cf ? "cloudflare" : oa ? "openai" : "";
 }
 
-const MP3 = { "content-type": "audio/mpeg" };
+const MP3 = { "content-type": "audio/mpeg", ...NO_STORE };
 
 // Cloudflare Workers AI: MeloTTS (English) or Deepgram Aura-1. Free daily allowance; keys stay on the server.
 async function viaCloudflare(env: Env, text: string, voice: string): Promise<Response> {
@@ -48,7 +48,7 @@ async function viaCloudflare(env: Env, text: string, voice: string): Promise<Res
   const d = (await r.json().catch(() => null)) as { result?: { audio?: unknown } | string; audio?: unknown } | null;
   const b64 = typeof d?.result === "string" ? d.result : typeof d?.result === "object" && d.result ? d.result.audio : d?.audio;
   if (typeof b64 !== "string" || !b64) return json({ error: "Cloudflare replied, but without any audio." }, 502);
-  let bytes: Uint8Array;
+  let bytes: Uint8Array<ArrayBuffer>;
   try { bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)); } catch { return json({ error: "Cloudflare sent audio in a format the server could not read." }, 502); }
   return new Response(bytes, { status: 200, headers: MP3 });
 }
