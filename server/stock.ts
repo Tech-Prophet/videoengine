@@ -1,4 +1,4 @@
-import { guard, json, type Env } from "./shared.ts";
+import { guard, json, NO_STORE, type Env } from "./shared.ts";
 
 // GET /api/stock?provider=pexels|pixabay&kind=photos|videos&q=...&orientation=landscape|portrait&per_page=10&page=1
 // Looks up stock media with the server's key and returns the provider's JSON unchanged.
@@ -34,6 +34,6 @@ export async function stock(req: Request, env: Env) {
 
   const r = await fetch(url, { headers });
   if (!r.ok) return json({ error: `The ${provider} request returned ${r.status}.` }, r.status === 429 ? 429 : 502);
-  return new Response(r.body, { status: 200, headers: { "content-type": "application/json" } });
+  return new Response(r.body, { status: 200, headers: { "content-type": "application/json", ...NO_STORE } });
 }
 

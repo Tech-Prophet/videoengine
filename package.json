@@ -1,5 +1,5 @@
 {
-  "name": "vite-react-typescript-starter",
+  "name": "videoengine",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -11,10 +11,8 @@
   },
   "dependencies": {
     "react": "^19.3.1",
-    "react-dom": "^19.3.1",
-    "lucide-react": "^1.61.0",
-    "canvas-confetti": "^1.9.3"
-},
+    "react-dom": "^19.3.1"
+  },
   "devDependencies": {
     "@types/node": "^24.19.2",
     "@types/react": "^19.3.0",
