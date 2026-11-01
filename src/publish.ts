@@ -64,7 +64,7 @@ export function publishPrompt(i: PromptIn): string {
     "Three other title options, one per line.",
     "",
     "### DESCRIPTION",
-    `Under 5,000 characters. The first two lines are the hook, because that is all people see before "Show more". Use the main keywords naturally. Then a short summary of the story${i.wide && i.chapters.length ? ', then the heading "Chapters:" followed by the chapter timestamps exactly as given above' : ""}, then one short line asking people to subscribe and comment. End with 3 hashtags.${i.credits.trim() ? ` Keep these credit lines at the very end, exactly as written:\n${i.credits.trim()}` : ""}`,
+    `Under 5,000 characters. The first two lines are the hook, because that is all people see before "Show more". Use the main keywords naturally. Then a short summary of the story${i.wide && i.chapters.length ? ', then the heading "Chapters:" followed by the chapter timestamps exactly as given above' : ""}, then one short line asking people to subscribe and comment. Do not list sources here, they go under SOURCES. End with 3 hashtags.${i.credits.trim() ? ` Keep these credit lines at the very end, exactly as written:\n${i.credits.trim()}` : ""}`,
     "",
     "### TAGS",
     "10 to 15 tags separated by commas, under 500 characters in total, most important first.",
@@ -75,16 +75,20 @@ export function publishPrompt(i: PromptIn): string {
     "### PINNED COMMENT",
     "One short comment that asks viewers a question to start a discussion.",
     "",
+    "### SOURCES",
+    "Browse the web for real, citable sources that support the facts in my script. Prefer official, academic, museum, government or established publisher pages. List only pages you actually opened, one per line, written as: - Page title (publisher): full URL - what the page covers in a few words.",
+    "Never invent, guess or recall a source or a URL from memory. I will open and check every one myself. If you cannot browse the web, write exactly: Could not browse. Add sources before publishing.",
+    "",
     "RULES: use only facts that are in my script; do not invent numbers, names or claims; plain, clear language; no emojis unless my notes ask for them.",
   ];
   return lines.filter((l): l is string => typeof l === "string").join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
-export type Answer = { title?: string; description?: string; tags?: string; thumb?: string; pinned?: string };
+export type Answer = { title?: string; description?: string; tags?: string; thumb?: string; pinned?: string; sources?: string };
 
 // Reads the AI's answer. Headings can be "### TITLE", "TITLE:", "**Title**" and so on; "TITLE IDEAS" is ignored.
 export function parseAnswer(text: string): Answer {
-  const names: Record<string, keyof Answer | "skip"> = { "TITLE": "title", "DESCRIPTION": "description", "TAGS": "tags", "THUMBNAIL TEXT": "thumb", "PINNED COMMENT": "pinned", "TITLE IDEAS": "skip", "HASHTAGS": "skip" };
+  const names: Record<string, keyof Answer | "skip"> = { "TITLE": "title", "DESCRIPTION": "description", "TAGS": "tags", "THUMBNAIL TEXT": "thumb", "PINNED COMMENT": "pinned", "SOURCES": "sources", "TITLE IDEAS": "skip", "HASHTAGS": "skip" };
   const out: Answer = {};
   let key: keyof Answer | "skip" | null = null, buf: string[] = [];
   const flush = () => {
@@ -94,7 +98,7 @@ export function parseAnswer(text: string): Answer {
     }
     buf = [];
   };
-  const HEAD = /^[\s#>*_-]*(THUMBNAIL TEXT|PINNED COMMENT|TITLE IDEAS|DESCRIPTION|HASHTAGS|TITLE|TAGS)[\s*_]*(?::[\s*_]*(.*))?$/i;
+  const HEAD = /^[\s#>*_-]*(THUMBNAIL TEXT|PINNED COMMENT|TITLE IDEAS|DESCRIPTION|HASHTAGS|SOURCES|TITLE|TAGS)[\s*_]*(?::[\s*_]*(.*))?$/i;
   for (const raw of text.replace(/\r/g, "").split("\n")) {
     const line = raw.replace(/\*\*|__/g, "");
     const m = line.match(HEAD);
