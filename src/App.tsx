@@ -1721,7 +1721,7 @@ DELIVERY: voiceover
           </nav>
           <div ref={sideScroll} className="vtx-side-inner min-h-0 flex-1 space-y-4 overflow-y-auto p-3 sm:p-4">
             {tab === "create" && (<>
-              <Section title="1. Script" defaultOpen>
+              <Section title="Script" defaultOpen>
                 <Field l="Video topic or title"><input className={inp} value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="e.g. 5 habits for productivity" /></Field>
 
                 <Section title="Get a script from Claude, ChatGPT or any AI" note={scriptText.trim() ? "optional" : ""} defaultOpen={!scriptText.trim()}>
@@ -1743,7 +1743,7 @@ DELIVERY: voiceover
                 </Field>
               </Section>
 
-              <Section title="2. Pictures" defaultOpen>
+              <Section title="Pictures" defaultOpen>
                 <Field l="Visual source">
                   <select className={inp} value={source} onChange={(e) => setSource(e.target.value as Source)}>
                     <option value="mix">Both: AI images + stock video (free, recommended)</option>
@@ -1773,7 +1773,7 @@ DELIVERY: voiceover
                 <p className="text-xs text-slate-500">This affects things like upright phone photos in a wide video. Pictures close to the video's shape always fill the frame. For upright photos, the vertical (Shorts) format fills the screen with no bars.</p>
               </Section>
 
-              <Section title="3. Generate" defaultOpen>
+              <Section title="Generate" defaultOpen>
                 <button className={`${btn(true)} w-full !py-2.5`} disabled={busy || exporting} onClick={generateVideo}>{busy || exporting ? "Working…" : "Generate video"}</button>
                 <button className={`${btn()} w-full`} disabled={busy || exporting} onClick={loadOnly}>Load script into scenes only</button>
                 <button className={`${btn()} w-full`} disabled={busy || exporting} onClick={() => { if (window.confirm("Clear the saved project and start fresh?")) { try { localStorage.removeItem(SAVE_KEY); } catch { /* ignore */ } window.location.reload(); } }}>Start a new project</button>
@@ -1904,7 +1904,7 @@ DELIVERY: voiceover
                 </ul>
               </Section>
 
-              <Section title="1. Video file" note={file ? "✓ ready" : "render first"} defaultOpen>
+              <Section title="Video file" note={file ? "✓ ready" : "render first"} defaultOpen>
                 {file ? <>
                   <a href={file.url} download={file.name} className={`${btn(true)} block w-full text-center`}>Download {file.name.split(".").pop()?.toUpperCase()} video ({file.mb.toFixed(1)} MB)</a>
                   <a href={file.url} target="_blank" rel="noreferrer" className="block text-center text-xs text-violet-300 underline">Download not starting? Open the video, then use the ⋮ menu → Download</a>
@@ -1916,7 +1916,7 @@ DELIVERY: voiceover
                 </details>
               </Section>
 
-              <Section title="2. Write everything with any AI" note={vDesc.trim() ? "✓ done" : ""} defaultOpen={!vDesc.trim()}>
+              <Section title="Write everything with any AI" note={vDesc.trim() ? "✓ done" : ""} defaultOpen={!vDesc.trim()}>
                 <p className="text-xs text-slate-400">The app prepares one prompt from your script and scene times. Paste it into ChatGPT, Claude, Gemini or any AI, and it writes your title, description, tags, thumbnail text and pinned comment.</p>
                 <Field l="Notes for the AI (optional): channel name, links, language, call to action"><textarea className={inp} rows={2} value={aiNotes} onChange={(e) => setAiNotes(e.target.value)} placeholder="e.g. Channel: Bee Tales. Mention my newsletter." /></Field>
                 {noScript && <p className="rounded-md border border-amber-500/40 p-2 text-xs text-amber-300">There is no script in the app yet, so the AI would have nothing to write about. In the Create tab, paste your script and tap “Load script into scenes only” (or Generate video), then come back here.</p>}
@@ -1925,7 +1925,7 @@ DELIVERY: voiceover
                   <summary className="cursor-pointer">Read the prompt</summary>
                   <textarea className={`${inp} mt-2`} rows={10} readOnly value={promptText} />
                 </details>
-                <ol className="list-decimal space-y-1 pl-5 text-xs text-slate-400">
+                <ol className="list-disc space-y-1 pl-5 text-xs text-slate-400">
                   <li>Tap Copy prompt for AI and paste it into your AI.</li>
                   <li>Copy the AI's whole answer.</li>
                   <li>Paste it below and tap Fill my boxes.</li>
@@ -1934,12 +1934,12 @@ DELIVERY: voiceover
                 <button className={`${btn()} w-full`} disabled={!aiAnswer.trim()} onClick={fillFromAnswer}>Fill my boxes</button>
               </Section>
 
-              <Section title="3. Title" note={vTitle.trim() ? "✓ done" : ""} defaultOpen>
+              <Section title="Title" note={vTitle.trim() ? "✓ done" : ""} defaultOpen>
                 <Field l={`Title (${vTitle.length}/100)`}><input className={inp} value={vTitle} onChange={(e) => setVTitle(e.target.value)} /></Field>
                 <button className={`${btn()} w-full`} disabled={!vTitle.trim()} onClick={() => void copyText(vTitle.trim(), "Title")}>Copy title</button>
               </Section>
 
-              <Section title="4. Description" note={vDesc.trim() ? "✓ done" : ""} defaultOpen>
+              <Section title="Description" note={vDesc.trim() ? "✓ done" : ""} defaultOpen>
                 <Field l={`Description (${vDesc.length}/5000)`}><textarea className={inp} rows={8} value={vDesc} onChange={(e) => setVDesc(e.target.value)} /></Field>
                 <button className={`${btn(true)} w-full`} disabled={!vDesc.trim()} onClick={() => void copyText(vDesc.trim(), "Description")}>Copy description</button>
                 {fmt === "long" && genericNames.length > 0 && <p className="rounded-md border border-amber-500/40 p-2 text-xs text-amber-300">These scene names look generic: {genericNames.join(", ")}. Rename them in the Scenes tab so each chapter tells viewers what that part is about.</p>}
@@ -1947,7 +1947,7 @@ DELIVERY: voiceover
                 <p className="text-xs text-slate-500">Chapters use your scene names and the real timings. Skip this button if the AI already wrote the chapters.</p>
               </Section>
 
-              <Section title="5. Sources (check before publishing)" note={!vSources.trim() ? "" : hasSources(vDesc) ? "✓ in description" : srcChecked ? "✓ checked" : "to check"}>
+              <Section title="Sources (check before publishing)" note={!vSources.trim() ? "" : hasSources(vDesc) ? "✓ in description" : srcChecked ? "✓ checked" : "to check"}>
                 <p className="text-xs text-slate-400">The AI browses for sources and lists them here. It can still be wrong, so open every link and check that it supports what the video says. Delete any you cannot confirm. Nothing goes into the description until you tick the box.</p>
                 {SRC_NONE.test(vSources) && <p className="rounded-md border border-amber-500/40 p-2 text-xs text-amber-300">The AI said it could not browse the web. Add your own sources below, or ask an AI that can search the web.</p>}
                 <Field l="Sources, one per line"><textarea className={inp} rows={6} value={vSources} onChange={(e) => setVSources(e.target.value)} placeholder="- Page title (publisher): https://example.org/page - what it covers" /></Field>
@@ -1962,20 +1962,20 @@ DELIVERY: voiceover
                 <button className={`${btn()} w-full`} disabled={!hasSources(vDesc)} onClick={() => { setVDesc(dropSources(vDesc)); setMsg("Sources removed from the description."); }}>Remove sources from the description</button>
               </Section>
 
-              <Section title="6. Tags" note={vTags.trim() ? "✓ done" : ""} defaultOpen>
+              <Section title="Tags" note={vTags.trim() ? "✓ done" : ""} defaultOpen>
                 <Field l={`Tags, separated by commas (${vTags.length}/500)`}><textarea className={inp} rows={3} value={vTags} onChange={(e) => setVTags(e.target.value)} placeholder="e.g. honey bee, nature, documentary" /></Field>
                 <button className={`${btn()} w-full`} disabled={!vTags.trim()} onClick={() => void copyText(vTags.trim(), "Tags")}>Copy tags</button>
                 <p className="text-xs text-slate-500">In YouTube Studio, tags are under “Show more”.</p>
               </Section>
 
-              <Section title="7. Thumbnail" note={thumbText.trim() ? "✓ done" : ""} defaultOpen>
+              <Section title="Thumbnail" note={thumbText.trim() ? "✓ done" : ""} defaultOpen>
                 <Field l="Thumbnail text"><input className={inp} value={thumbText} onChange={(e) => setThumbText(e.target.value)} placeholder="3–5 words" /></Field>
                 <canvas ref={thumbRef} width={1280} height={720} className="w-full rounded-md" />
                 <button className={`${btn()} w-full`} onClick={grabFrame}>Use current preview frame</button>
                 <button className={`${btn(true)} w-full`} onClick={() => void downloadThumb()}>Download thumbnail</button>
               </Section>
 
-              <Section title="8. Thumbnail picture prompt (optional)" note={thumbScene.trim() && thumbSetting.trim() ? "✓ ready" : ""}>
+              <Section title="Thumbnail picture prompt (optional)" note={thumbScene.trim() && thumbSetting.trim() ? "✓ ready" : ""}>
                 <p className="text-xs text-slate-500">Optional. Fill the details yourself, or let an AI draft them from your script. The thumbnail text above is used as the headline.</p>
                 <button className={`${btn()} w-full`} disabled={!scriptForThumb.trim()} onClick={() => void copyText(thumbFillPrompt({ topic: thumbFields.topic, script: scriptForThumb }), "Request")}>Copy request: ask an AI to fill the details</button>
                 <Field l="Paste the AI's reply here"><textarea className={inp} rows={3} value={thumbReply} onChange={(e) => setThumbReply(e.target.value)} /></Field>
@@ -1987,17 +1987,17 @@ DELIVERY: voiceover
                 <p className="text-xs text-slate-500">Paste it into your image generator and attach your reference thumbnail so the look stays the same. Then check the spelling of the headline.</p>
               </Section>
 
-              <Section title="9. Captions file (subtitles)">
+              <Section title="Captions file (subtitles)">
                 <button className={`${btn(true)} w-full`} disabled={!scenes.some((x) => x.text.trim())} onClick={downloadCaptions}>Download captions file (.srt)</button>
                 <p className="text-xs text-slate-500">{captionsEstimated ? "Timing is estimated, because the voiceover was not recorded by the app. " : "Timing matches your recorded voiceover. "}In YouTube Studio, open Subtitles, then Add language, then Upload file. The captions already in the picture stay as they are; this file lets viewers turn captions on and off.</p>
               </Section>
 
-              <Section title="10. Pinned comment">
+              <Section title="Pinned comment">
                 <Field l="Post this as the first comment, then pin it"><textarea className={inp} rows={3} value={pinnedText} onChange={(e) => setPinned(e.target.value)} /></Field>
                 <button className={`${btn()} w-full`} onClick={() => void copyText(pinnedText, "Comment")}>Copy comment</button>
               </Section>
 
-              <Section title="11. Settings in YouTube (tick each when done)">
+              <Section title="Settings in YouTube (tick each when done)">
                 {([
                   ["kids", "Audience: choose whether the video is made for kids."],
                   ["ai", "Altered content: if the voice or pictures look real but were made with AI, answer Yes. Check YouTube's current rules."],
