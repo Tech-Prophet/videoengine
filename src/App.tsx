@@ -9,6 +9,8 @@ import { drawCaption } from "./captions.ts";
 import { drawTitle } from "./title.ts";
 import { chapterList, publishPrompt, parseAnswer, srtFile } from "./publish.ts";
 import { duckFactor, levels, rmsActive, rmsAll } from "./mix.ts";
+import { COMIC_STYLE, STYLE_NAMES, isStyleId, scenePrompt, styleText } from "./visualStyle.ts";
+import type { StyleId } from "./visualStyle.ts";
 
 type Fmt = "long" | "short";
 type Fit = "blur" | "fill" | "plain"; // what to do with a picture whose shape does not match the video
@@ -369,12 +371,12 @@ const withCredits = (d: string, list: Scene[]) => {
 type AiState = { fails: number };
 const ANGLES = ["wide establishing shot", "close-up detail", "medium shot with natural action", "low angle dramatic view", "aerial view", "soft focus foreground depth"];
 const aiShots = (dur: number) => Math.max(3, Math.min(6, Math.ceil(dur / 8)));
-// Free, keyless photoreal image generation. Fails safe: after 3 failed images it stops trying for the rest of the run.
-async function aiImages(queries: string[], topic: string, f: Fmt, n: number, st: AiState, narr: string[] = []): Promise<string[]> {
+// Free, keyless image generation, in the picture style the user chose (photographs unless they pick another). Fails safe: after 3 failed images it stops trying for the rest of the run.
+async function aiImages(queries: string[], topic: string, f: Fmt, n: number, st: AiState, style: string, narr: string[] = []): Promise<string[]> {
   if (n <= 0 || !queries.length) return [];
   const [w, h] = f === "long" ? [1280, 720] : [720, 1280];
   const one = async (i: number): Promise<string | null> => {
-    const prompt = `${narr[i] ? `Scene: ${narr[i]}. ` : ""}${queries[i % queries.length]}, ${topic}, ${ANGLES[i % ANGLES.length]}, ultra realistic professional photograph, natural lighting, sharp focus, high detail, no text, no watermark`;
+    const prompt = `${narr[i] ? `Scene: ${narr[i]}. ` : ""}${queries[i % queries.length]}, ${topic}, ${ANGLES[i % ANGLES.length]}, ${style}, no text, no watermark`;
     const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${w}&height=${h}&model=flux&nologo=true&seed=${Math.floor(Math.random() * 1e6)}`;
     for (let a = 0; a < 2; a++) {
       const ctl = new AbortController();
@@ -400,7 +402,7 @@ async function aiImages(queries: string[], topic: string, f: Fmt, n: number, st:
 }
 type Source = "ai" | "stock" | "mix";
 const shotsFor = (src: Source, dur: number, moving: boolean) => (src === "ai" ? aiShots(dur) : src === "mix" ? Math.max(4, Math.min(8, Math.ceil(dur / 7))) : shotCount(dur, moving));
-type Gather = { keys: { pixabay: string; pexels: string }; source: Source; topic: string; f: Fmt; res: number; moving: boolean; st: AiState; page?: number };
+type Gather = { keys: { pixabay: string; pexels: string }; source: Source; topic: string; f: Fmt; res: number; moving: boolean; st: AiState; style: string; page?: number };
 // The sentence being narrated at a given point (0 to 1) of a scene, used to make AI pictures match the story.
 const narrAt = (text: string, frac: number) => {
   const ss = sentencesOf(text);
@@ -414,7 +416,7 @@ async function gatherClips(o: Gather, sc: Scene, n: number): Promise<Clip[]> {
   const page = o.page ?? 1;
   const aiClips = async (count: number, offset: number): Promise<Clip[]> => {
     const narr = Array.from({ length: count }, (_, i) => narrAt(sc.text, (offset + i) / Math.max(1, n)));
-    return (await aiImages(qs, o.topic, o.f, count, o.st, narr)).map((url) => ({ url, kind: "image" as const, src: "ai" as const }));
+    return (await aiImages(qs, o.topic, o.f, count, o.st, o.style, narr)).map((url) => ({ url, kind: "image" as const, src: "ai" as const }));
   };
   if (o.source === "mix") {
     // Half real stock video, half AI photos, interleaved so every scene has both moving video and images.
@@ -428,7 +430,7 @@ async function gatherClips(o: Gather, sc: Scene, n: number): Promise<Clip[]> {
     const nImg = n - vids.length;
     const slot = (i: number) => (i < vids.length ? 2 * i + 1 : vids.length + i);
     const narr = Array.from({ length: nImg }, (_, i) => narrAt(sc.text, slot(i) / Math.max(1, n)));
-    const imgs = (await aiImages(qs, o.topic, o.f, nImg, o.st, narr)).map((url) => ({ url, kind: "image" as const, src: "ai" as const }));
+    const imgs = (await aiImages(qs, o.topic, o.f, nImg, o.st, o.style, narr)).map((url) => ({ url, kind: "image" as const, src: "ai" as const }));
     const mixed: Clip[] = [];
     for (let i = 0; i < Math.max(vids.length, imgs.length); i++) {
       if (i < vids.length) mixed.push(vids[i]);
@@ -476,7 +478,7 @@ const borrowVisuals = (list: Scene[]): Scene[] =>
 const SAVE_KEY = "vortex-project";
 type Saved = {
   v: 1; fmt: Fmt; res: number; fps: number; wpm: number; topic: string; tone: string; minutes: number; minSec: number;
-  scriptText: string; intro: string; source: Source; moving: boolean; caps: boolean; fit?: Fit; musicStyle?: MusicStyle; autoMusic?: boolean; balance?: boolean; leadSec?: number; outro?: string; introColor?: string; accent?: string; aiNotes?: string;
+  scriptText: string; intro: string; source: Source; moving: boolean; caps: boolean; fit?: Fit; musicStyle?: MusicStyle; autoMusic?: boolean; balance?: boolean; leadSec?: number; outro?: string; introColor?: string; accent?: string; aiNotes?: string; styleId?: StyleId; customStyle?: string;
   vTitle: string; vDesc: string; vTags: string; thumbText: string;
   scenes: Omit<Scene, "clips" | "marks">[];
 };
@@ -776,6 +778,9 @@ export default function App() {
   const [autoRender, setAutoRender] = useState(false);
   const [moving, setMoving] = useState(saved?.moving ?? true);
   const [source, setSource] = useState<Source>(saved?.source ?? "mix");
+  const [styleId, setStyleId] = useState<StyleId>(isStyleId(saved?.styleId) ? saved.styleId : "photo"); // photographs stay the default
+  const [customStyle, setCustomStyle] = useState(saved?.customStyle ?? COMIC_STYLE);
+  const picStyle = styleText(styleId, customStyle);
   const aiSt = useRef<AiState>({ fails: 0 });
   const findPage = useRef<Record<string, number>>({}); // per scene: which page of stock results "Find and add more" is on
   const [msg, setMsg] = useState("");
@@ -957,14 +962,14 @@ DELIVERY: voiceover
     const id = window.setTimeout(() => {
       try {
         const data: Saved = {
-          v: 1, fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, aiNotes, vTitle, vDesc, vTags, thumbText,
+          v: 1, fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, aiNotes, styleId, customStyle, vTitle, vDesc, vTags, thumbText,
           scenes: scenes.map((s) => ({ id: s.id, title: s.title, text: s.text, onScreen: s.onScreen, visual: s.visual, duration: s.duration, palette: s.palette })),
         };
         localStorage.setItem(SAVE_KEY, JSON.stringify(data));
       } catch { /* storage full or blocked: skip */ }
     }, 800);
     return () => clearTimeout(id);
-  }, [fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, aiNotes, vTitle, vDesc, vTags, thumbText, scenes]);
+  }, [fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, aiNotes, styleId, customStyle, vTitle, vDesc, vTags, thumbText, scenes]);
   useEffect(() => {
     if (!code) return undefined;
     const ctl = new AbortController();
@@ -1214,7 +1219,7 @@ DELIVERY: voiceover
       const page = (findPage.current[id] ?? 1) + 1; // page 1 was used when the video was generated; each press moves on to fresh results
       findPage.current[id] = page;
       setMsg(source !== "stock" ? "Generating more visuals for this scene (can take a minute)…" : "Finding more visuals for this scene…");
-      const clips = await gatherClips({ keys, source, topic: topic.trim(), f: fmt, res, moving, st: aiSt.current, page }, sel, n);
+      const clips = await gatherClips({ keys, source, topic: topic.trim(), f: fmt, res, moving, st: aiSt.current, style: picStyle, page }, sel, n);
       // Added after what the scene already has, so uploads and earlier finds are kept.
       setScenes((ss) => ss.map((s) => (s.id === id ? { ...s, clips: [...s.clips, ...clips] } : s)));
       const vids = clips.filter((c) => c.kind === "video").length;
@@ -1319,6 +1324,12 @@ DELIVERY: voiceover
       setMsg("Background music added. It loops under the whole video. Set its volume below.");
     } catch { setMsg("Could not make the music on this device."); }
     setMakingMusic(false);
+  };
+  const copyScenePrompt = async () => {
+    if (!sel) return;
+    const text = scenePrompt(picStyle, { topic, title: sel.title, narration: sel.text, visual: sel.visual, long: fmt === "long" });
+    try { await navigator.clipboard.writeText(text); setMsg("Image prompt for this scene copied. Paste it into your image generator (attach a reference picture there to keep the look the same)."); }
+    catch { setMsg("Couldn't copy automatically. Try again, or allow clipboard access for this site."); }
   };
   const copyPrompt = async () => {
     try { await navigator.clipboard.writeText(aiPrompt); setMsg("Prompt copied. Paste it into Claude or ChatGPT, then paste the reply into the “Paste the script here” box."); }
@@ -1440,7 +1451,7 @@ DELIVERY: voiceover
         setMsg(source !== "stock" ? `Generating photoreal visuals for scene ${i + 1} of ${next.length} (can take a minute each)…` : `Finding multiple unique visuals for scene ${i + 1} of ${next.length}…`);
         const n = shotsFor(source, s.duration, moving);
         try {
-          const clips = await gatherClips({ keys, source, topic: topic.trim(), f: fmt, res, moving, st: aiSt.current }, s, n);
+          const clips = await gatherClips({ keys, source, topic: topic.trim(), f: fmt, res, moving, st: aiSt.current, style: picStyle }, s, n);
           withPics.push({ ...s, clips });
         } catch (e) { failure = e instanceof Error ? e.message : ""; withPics.push(s); }
       }
@@ -1685,6 +1696,13 @@ DELIVERY: voiceover
                   <option value="stock">Stock footage (Pexels and Pixabay; AI pictures fill any gaps)</option>
                 </select>
               </Field>
+              <Field l="Picture style (for AI pictures)">
+                <select className={inp} value={styleId} onChange={(e) => setStyleId(e.target.value as StyleId)}>
+                  {(Object.keys(STYLE_NAMES) as StyleId[]).map((k) => <option key={k} value={k}>{STYLE_NAMES[k]}</option>)}
+                </select>
+              </Field>
+              <textarea aria-label="Picture style wording" rows={5} className={`${inp} text-xs`} readOnly={styleId !== "custom"} value={styleId === "custom" ? customStyle : picStyle} onChange={(e) => setCustomStyle(e.target.value)} />
+              <p className="text-xs text-slate-500">Used by the app's AI pictures. It does not change stock video or photos you upload. In the Scenes tab, “Copy image prompt” builds the same style into a prompt for any image generator you prefer.</p>
               {source !== "stock" && <p className="text-xs text-slate-500">{source === "mix" ? "Each scene gets AI photos plus real video clips (the video clips come from Pexels and Pixabay, which needs their keys on the server and your access code; without them every picture is AI)." : "Each scene gets AI photos that match your VISUAL lines. "}Allow about 1 to 2 minutes per scene before rendering starts.</p>}
               <label className="flex items-start gap-2 rounded-md border border-slate-800 p-2 text-xs text-slate-400">
                 <input type="checkbox" className="mt-0.5" checked={moving} onChange={(e) => setMoving(e.target.checked)} />
@@ -1756,6 +1774,8 @@ DELIVERY: voiceover
                 <Field l="Visual search keywords"><input className={inp} value={sel.visual} onChange={(e) => patch({ visual: e.target.value })} /></Field>
                 <button className={btn()} disabled={busy} onClick={findPhoto}>Find and add more visuals</button>
                 <p className="text-xs text-slate-500">New visuals are added to the end of the list. Nothing you uploaded is replaced.</p>
+                <button className={btn()} onClick={() => void copyScenePrompt()}>Copy image prompt for this scene</button>
+                <p className="text-xs text-slate-500">For making this scene's picture in another image generator, in the picture style chosen in the Create tab. Add the picture afterwards with “Add your own images and videos”.</p>
                 <div className="space-y-1.5">
                   <p className="text-xs text-slate-400">{sel.clips.length ? `${sel.clips.length} visual${sel.clips.length === 1 ? "" : "s"} in this scene, shown in this order:` : "No visuals in this scene yet."}{sel.onCam ? " (Camera scene: only the first one is used.)" : ""}</p>
                   {sel.clips.map((c, k) => (
