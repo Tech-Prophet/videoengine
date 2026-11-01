@@ -11,6 +11,7 @@ import { chapterList, publishPrompt, parseAnswer, srtFile } from "./publish.ts";
 import { duckFactor, levels, rmsActive, rmsAll } from "./mix.ts";
 import { COMIC_STYLE, STYLE_NAMES, isStyleId, scenePrompt, styleText } from "./visualStyle.ts";
 import type { StyleId } from "./visualStyle.ts";
+import { parseThumbFill, thumbFillPrompt, thumbPrompt, thumbReady } from "./thumbnail.ts";
 
 type Fmt = "long" | "short";
 type Fit = "blur" | "fill" | "plain"; // what to do with a picture whose shape does not match the video
@@ -478,7 +479,7 @@ const borrowVisuals = (list: Scene[]): Scene[] =>
 const SAVE_KEY = "vortex-project";
 type Saved = {
   v: 1; fmt: Fmt; res: number; fps: number; wpm: number; topic: string; tone: string; minutes: number; minSec: number;
-  scriptText: string; intro: string; source: Source; moving: boolean; caps: boolean; fit?: Fit; musicStyle?: MusicStyle; autoMusic?: boolean; balance?: boolean; leadSec?: number; outro?: string; introColor?: string; accent?: string; aiNotes?: string; styleId?: StyleId; customStyle?: string;
+  scriptText: string; intro: string; source: Source; moving: boolean; caps: boolean; fit?: Fit; musicStyle?: MusicStyle; autoMusic?: boolean; balance?: boolean; leadSec?: number; outro?: string; introColor?: string; accent?: string; aiNotes?: string; styleId?: StyleId; customStyle?: string; thumbTopic?: string; thumbScene?: string; thumbSetting?: string;
   vTitle: string; vDesc: string; vTags: string; thumbText: string;
   scenes: Omit<Scene, "clips" | "marks">[];
 };
@@ -821,6 +822,10 @@ export default function App() {
   const [vDesc, setVDesc] = useState(saved?.vDesc ?? "");
   const [vTags, setVTags] = useState(saved?.vTags ?? "");
   const [thumbText, setThumbText] = useState(saved?.thumbText ?? "");
+  const [thumbTopic, setThumbTopic] = useState(saved?.thumbTopic ?? ""); // empty = use the video title
+  const [thumbScene, setThumbScene] = useState(saved?.thumbScene ?? "");
+  const [thumbSetting, setThumbSetting] = useState(saved?.thumbSetting ?? "");
+  const [thumbReply, setThumbReply] = useState(""); // the AI's answer for the scene fields, pasted back
   const [aiNotes, setAiNotes] = useState(saved?.aiNotes ?? ""); // extra notes added to the prompt for any AI
   const [aiAnswer, setAiAnswer] = useState(""); // the AI's answer, pasted back
   const [pinned, setPinned] = useState<string | null>(null); // pinned comment text (null = the suggested one)
@@ -962,14 +967,14 @@ DELIVERY: voiceover
     const id = window.setTimeout(() => {
       try {
         const data: Saved = {
-          v: 1, fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, aiNotes, styleId, customStyle, vTitle, vDesc, vTags, thumbText,
+          v: 1, fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, aiNotes, styleId, customStyle, thumbTopic, thumbScene, thumbSetting, vTitle, vDesc, vTags, thumbText,
           scenes: scenes.map((s) => ({ id: s.id, title: s.title, text: s.text, onScreen: s.onScreen, visual: s.visual, duration: s.duration, palette: s.palette })),
         };
         localStorage.setItem(SAVE_KEY, JSON.stringify(data));
       } catch { /* storage full or blocked: skip */ }
     }, 800);
     return () => clearTimeout(id);
-  }, [fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, aiNotes, styleId, customStyle, vTitle, vDesc, vTags, thumbText, scenes]);
+  }, [fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, aiNotes, styleId, customStyle, thumbTopic, thumbScene, thumbSetting, vTitle, vDesc, vTags, thumbText, scenes]);
   useEffect(() => {
     if (!code) return undefined;
     const ctl = new AbortController();
@@ -1296,6 +1301,17 @@ DELIVERY: voiceover
     a.href = url; a.download = "captions.srt"; document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 5000);
     setMsg(`Captions file saved.${captionsEstimated ? " Timing is estimated because the voiceover was not recorded by the app." : ""}`);
+  };
+  const thumbFields = { topic: thumbTopic.trim() || vTitle.trim() || topic.trim(), text: thumbText, scene: thumbScene, setting: thumbSetting };
+  const scriptForThumb = scenes.map((x) => `${x.title}: ${x.text}`).join("\n\n").slice(0, 8000);
+  const fillThumbFields = () => {
+    const r = parseThumbFill(thumbReply);
+    if (!r.text && !r.scene && !r.setting) { setMsg("Could not find the three headings in that reply. It should contain THUMBNAIL TEXT, CHARACTERS AND SCENE and HISTORICAL PERIOD/SETTING."); return; }
+    if (r.text) setThumbText(r.text);
+    if (r.scene) setThumbScene(r.scene);
+    if (r.setting) setThumbSetting(r.setting);
+    setThumbReply("");
+    setMsg("Filled in the thumbnail details. Check them, edit anything you like, then copy the thumbnail prompt.");
   };
   const copyText = async (text: string, what: string) => {
     try { await navigator.clipboard.writeText(text); setMsg(`${what} copied.`); }
@@ -1903,6 +1919,18 @@ DELIVERY: voiceover
                 <canvas ref={thumbRef} width={1280} height={720} className="w-full rounded-md" />
                 <button className={`${btn()} w-full`} onClick={grabFrame}>Use current preview frame</button>
                 <button className={`${btn(true)} w-full`} onClick={() => void downloadThumb()}>Download thumbnail</button>
+                <div className="space-y-2 border-t border-slate-800 pt-3">
+                  <h4 className="text-xs font-semibold text-slate-200">Thumbnail picture for an image generator</h4>
+                  <p className="text-xs text-slate-500">Optional. Fill the details yourself, or let an AI draft them from your script. The thumbnail text above is used as the headline.</p>
+                  <button className={`${btn()} w-full`} disabled={!scriptForThumb.trim()} onClick={() => void copyText(thumbFillPrompt({ topic: thumbFields.topic, script: scriptForThumb }), "Request")}>Copy request: ask an AI to fill the details</button>
+                  <Field l="Paste the AI's reply here"><textarea className={inp} rows={3} value={thumbReply} onChange={(e) => setThumbReply(e.target.value)} /></Field>
+                  <button className={`${btn()} w-full`} disabled={!thumbReply.trim()} onClick={fillThumbFields}>Fill in the details from the reply</button>
+                  <Field l="Video topic"><input className={inp} value={thumbTopic} onChange={(e) => setThumbTopic(e.target.value)} placeholder={vTitle || topic || "What the video is about"} /></Field>
+                  <Field l="Characters and scene"><textarea className={inp} rows={4} value={thumbScene} onChange={(e) => setThumbScene(e.target.value)} placeholder="Who is in the picture, how they look, and what they are doing" /></Field>
+                  <Field l="Period or setting"><input className={inp} value={thumbSetting} onChange={(e) => setThumbSetting(e.target.value)} placeholder="e.g. Strasbourg, July 1518, a cobbled town square" /></Field>
+                  <button className={`${btn(true)} w-full`} disabled={!thumbReady(thumbFields)} onClick={() => void copyText(thumbPrompt(thumbFields), "Thumbnail prompt")}>Copy thumbnail prompt</button>
+                  <p className="text-xs text-slate-500">Paste it into your image generator and attach your reference thumbnail so the look stays the same. Then check the spelling of the headline.</p>
+                </div>
               </div>
 
               <div className="space-y-2 rounded-md border border-slate-800 p-3">
