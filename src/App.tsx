@@ -369,6 +369,22 @@ const withCredits = (d: string, list: Scene[]) => {
   if (all.some((c) => c.src === "pixabay")) lines.push("Videos and photos from Pixabay (https://pixabay.com)");
   return lines.length ? `${head}${CREDIT_HEAD}\n${lines.join("\n")}` : head;
 };
+// Sources are kept in their own box so the creator can check them. They only go into the description once ticked,
+// ahead of the hashtags and the stock footage credits, which stay last.
+const SRC_NONE = /could not browse/i;
+const urlsIn = (t: string) => [...new Set((t.match(/https?:\/\/[^\s<>"')\]]+/g) ?? []).map((u) => u.replace(/[.,;:!?]+$/, "")))];
+const hasSources = (d: string) => /(^|\n)\s*sources\s*:/i.test(d);
+const dropSources = (d: string) => d.split(/\n{2,}/).filter((q) => !/^\s*sources\s*:/i.test(q)).join("\n\n");
+const addSources = (d: string, src: string) => {
+  const lines = src.split("\n").map((l) => l.trim()).filter(Boolean);
+  const paras = dropSources(d).split(/\n{2,}/).filter((q) => q.trim());
+  let at = paras.length;
+  while (at > 0 && (/^(\s*#[\w-]+\s*)+$/.test(paras[at - 1]) || /^\s*stock footage credits:/i.test(paras[at - 1]))) at--;
+  paras.splice(at, 0, `Sources:\n${lines.join("\n")}`);
+  return paras.join("\n\n");
+};
+// Scene names that tell a viewer nothing as a chapter title.
+const CHAPTER_GENERIC = /^(the\s+)?(scene|part|section|segment|hook|intro|introduction|opening|outro|ending|conclusion|closing(\s+thoughts?)?|cta|call to action)\s*\d*$/i;
 type AiState = { fails: number };
 const ANGLES = ["wide establishing shot", "close-up detail", "medium shot with natural action", "low angle dramatic view", "aerial view", "soft focus foreground depth"];
 const aiShots = (dur: number) => Math.max(3, Math.min(6, Math.ceil(dur / 8)));
@@ -479,7 +495,7 @@ const borrowVisuals = (list: Scene[]): Scene[] =>
 const SAVE_KEY = "vortex-project";
 type Saved = {
   v: 1; fmt: Fmt; res: number; fps: number; wpm: number; topic: string; tone: string; minutes: number; minSec: number;
-  scriptText: string; intro: string; source: Source; moving: boolean; caps: boolean; fit?: Fit; musicStyle?: MusicStyle; autoMusic?: boolean; balance?: boolean; leadSec?: number; outro?: string; introColor?: string; accent?: string; aiNotes?: string; styleId?: StyleId; customStyle?: string; thumbTopic?: string; thumbScene?: string; thumbSetting?: string;
+  scriptText: string; intro: string; source: Source; moving: boolean; caps: boolean; fit?: Fit; musicStyle?: MusicStyle; autoMusic?: boolean; balance?: boolean; leadSec?: number; outro?: string; introColor?: string; accent?: string; aiNotes?: string; styleId?: StyleId; customStyle?: string; thumbTopic?: string; thumbScene?: string; thumbSetting?: string; vSources?: string; srcChecked?: boolean;
   vTitle: string; vDesc: string; vTags: string; thumbText: string;
   scenes: Omit<Scene, "clips" | "marks">[];
 };
@@ -839,6 +855,8 @@ export default function App() {
   const [thumbTopic, setThumbTopic] = useState(saved?.thumbTopic ?? ""); // empty = use the video title
   const [thumbScene, setThumbScene] = useState(saved?.thumbScene ?? "");
   const [thumbSetting, setThumbSetting] = useState(saved?.thumbSetting ?? "");
+  const [vSources, setVSources] = useState(saved?.vSources ?? ""); // sources found by the AI, checked by the creator
+  const [srcChecked, setSrcChecked] = useState(saved?.srcChecked ?? false);
   const [thumbReply, setThumbReply] = useState(""); // the AI's answer for the scene fields, pasted back
   const [aiNotes, setAiNotes] = useState(saved?.aiNotes ?? ""); // extra notes added to the prompt for any AI
   const [aiAnswer, setAiAnswer] = useState(""); // the AI's answer, pasted back
@@ -894,7 +912,7 @@ export default function App() {
   const aiPrompt = `Write a YouTube ${fmt === "short" ? "Short" : "video"} script about: "${topic.trim() || "[your topic]"}".
 Tone: ${tone}. The narration must run about ${minutes} minute${minutes > 1 ? "s" : ""} when read aloud: at least ${totalWords} spoken words in total, and at least ${Math.round(perScene * 0.85)} words in every scene. Do not summarise or shorten.
 ${fmt === "short" ? "This is a vertical Short: hook the viewer in the first 3 seconds and keep every scene punchy." : "Hook the viewer in the first 10 seconds, state the promise of the video, give one idea per scene, and end with a short call to action."}
-Use exactly ${nScenes} scenes. Write the narration as plain spoken sentences only, with no stage directions and no emojis. The video opens on a wide establishing view and closes on a wide, calm view, so keep the searches of the first and last scenes wide.
+Use exactly ${nScenes} scenes. Give every scene a short, specific title of 2 to 6 words that a viewer would want to click as a YouTube chapter, for example "Why Bakers Start Before Sunrise" or "A City Under Strain". Never name a scene "Hook", "Intro", "Scene 2", "Part 3", "Conclusion" or "Call to action", and do not give away the ending in a title. Write the narration as plain spoken sentences only, with no stage directions and no emojis. The video opens on a wide establishing view and closes on a wide, calm view, so keep the searches of the first and last scenes wide.
 Reply in exactly this format and nothing else:
 
 TITLE: (under 70 characters)
@@ -903,12 +921,12 @@ DESCRIPTION: (2 to 3 sentences)
 TAGS: (8 to 12 tags, separated by commas)
 THUMBNAIL: (maximum 4 words)
 
-## Scene 1: Hook
+## Scene 1: (scene title)
 VISUAL: (3 different stock photo searches of 2 to 4 words each, separated by |, in the order the narration mentions them. Mix camera angles: one wide or aerial view, one close-up detail, one medium shot with people or action. Prefer real movement, such as 'person typing laptop' or 'woman walking park', over still objects)
 DELIVERY: voiceover
 (narration for this scene)
 
-## Scene 2: (scene name)
+## Scene 2: (scene title)
 VISUAL: ...
 DELIVERY: voiceover
 (narration for this scene)
@@ -981,14 +999,14 @@ DELIVERY: voiceover
     const id = window.setTimeout(() => {
       try {
         const data: Saved = {
-          v: 1, fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, aiNotes, styleId, customStyle, thumbTopic, thumbScene, thumbSetting, vTitle, vDesc, vTags, thumbText,
+          v: 1, fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, aiNotes, styleId, customStyle, thumbTopic, thumbScene, thumbSetting, vSources, srcChecked, vTitle, vDesc, vTags, thumbText,
           scenes: scenes.map((s) => ({ id: s.id, title: s.title, text: s.text, onScreen: s.onScreen, visual: s.visual, duration: s.duration, palette: s.palette })),
         };
         localStorage.setItem(SAVE_KEY, JSON.stringify(data));
       } catch { /* storage full or blocked: skip */ }
     }, 800);
     return () => clearTimeout(id);
-  }, [fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, aiNotes, styleId, customStyle, thumbTopic, thumbScene, thumbSetting, vTitle, vDesc, vTags, thumbText, scenes]);
+  }, [fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, aiNotes, styleId, customStyle, thumbTopic, thumbScene, thumbSetting, vSources, srcChecked, vTitle, vDesc, vTags, thumbText, scenes]);
   useEffect(() => {
     if (!code) return undefined;
     const ctl = new AbortController();
@@ -1287,6 +1305,7 @@ DELIVERY: voiceover
     if (a.tags) { setVTags(a.tags); got.push("tags"); }
     if (a.thumb) { setThumbText(a.thumb); got.push("thumbnail text"); }
     if (a.pinned) { setPinned(a.pinned); got.push("pinned comment"); }
+    if (a.sources) { setVSources(a.sources); setSrcChecked(false); got.push("sources (check them before they go in the description)"); }
     setMsg(got.length ? `Filled: ${got.join(", ")}. Read each one and edit if needed.` : "I could not find the headings (TITLE, DESCRIPTION, TAGS…) in that answer. Paste the AI's whole answer, or ask it to use the exact layout from the prompt.");
   };
   const addChapters = () => {
@@ -1297,6 +1316,7 @@ DELIVERY: voiceover
     setVDesc([head, `Chapters:\n${chapters.join("\n")}`, tail].filter(Boolean).join("\n\n"));
     setMsg("Chapters added to the description.");
   };
+  const genericNames = [...new Set(scenes.filter((x) => x.text.trim() && CHAPTER_GENERIC.test(x.title.trim())).map((x) => x.title.trim()))];
   const pinnedText = pinned ?? `What did you think of "${vTitle.trim() || "this video"}"? Tell us in the comments.`;
   const captionsEstimated = scenes.some((x) => x.text.trim() && !x.marks?.length);
   const downloadCaptions = () => {
@@ -1659,6 +1679,8 @@ DELIVERY: voiceover
     { ok: vDesc.trim().length > 0 && vDesc.length <= 5000, t: "Description is written and under 5,000 characters" },
     { ok: vTags.trim().length > 0 && vTags.length <= 500, t: "Tags added, under 500 characters" },
     { ok: fmt === "short" || chapters.length >= 3, t: "Chapters: 3 or more, each 10 seconds or longer" },
+    { ok: fmt === "short" || genericNames.length === 0, t: "Scene names work as chapter titles (none like “Hook” or “Scene 3”)" },
+    ...(vSources.trim() && !SRC_NONE.test(vSources) ? [{ ok: srcChecked && hasSources(vDesc), t: "Sources checked by you and added to the description" }] : []),
     { ok: !!voiceUrl || !!musicUrl, t: "Audio track attached" },
     { ok: caps, t: "Captions burned into the video" },
     { ok: thumbMb !== null && thumbMb < 2, t: "Thumbnail 1280×720, under 2 MB" },
@@ -1920,24 +1942,40 @@ DELIVERY: voiceover
               <Section title="4. Description" note={vDesc.trim() ? "✓ done" : ""} defaultOpen>
                 <Field l={`Description (${vDesc.length}/5000)`}><textarea className={inp} rows={8} value={vDesc} onChange={(e) => setVDesc(e.target.value)} /></Field>
                 <button className={`${btn(true)} w-full`} disabled={!vDesc.trim()} onClick={() => void copyText(vDesc.trim(), "Description")}>Copy description</button>
+                {fmt === "long" && genericNames.length > 0 && <p className="rounded-md border border-amber-500/40 p-2 text-xs text-amber-300">These scene names look generic: {genericNames.join(", ")}. Rename them in the Scenes tab so each chapter tells viewers what that part is about.</p>}
                 {fmt === "long" && <button className={`${btn()} w-full`} onClick={addChapters}>Add chapters from my scenes</button>}
                 <p className="text-xs text-slate-500">Chapters use your scene names and the real timings. Skip this button if the AI already wrote the chapters.</p>
               </Section>
 
-              <Section title="5. Tags" note={vTags.trim() ? "✓ done" : ""} defaultOpen>
+              <Section title="5. Sources (check before publishing)" note={!vSources.trim() ? "" : hasSources(vDesc) ? "✓ in description" : srcChecked ? "✓ checked" : "to check"}>
+                <p className="text-xs text-slate-400">The AI browses for sources and lists them here. It can still be wrong, so open every link and check that it supports what the video says. Delete any you cannot confirm. Nothing goes into the description until you tick the box.</p>
+                {SRC_NONE.test(vSources) && <p className="rounded-md border border-amber-500/40 p-2 text-xs text-amber-300">The AI said it could not browse the web. Add your own sources below, or ask an AI that can search the web.</p>}
+                <Field l="Sources, one per line"><textarea className={inp} rows={6} value={vSources} onChange={(e) => setVSources(e.target.value)} placeholder="- Page title (publisher): https://example.org/page - what it covers" /></Field>
+                {urlsIn(vSources).length > 0 && (
+                  <div className="space-y-1">
+                    <p className="text-xs text-slate-400">Open each link to check it:</p>
+                    {urlsIn(vSources).map((u) => <a key={u} href={u} target="_blank" rel="noreferrer" className="block truncate text-xs text-violet-300 underline">{u}</a>)}
+                  </div>
+                )}
+                <label className="flex items-start gap-2 text-xs text-slate-300"><input type="checkbox" className="mt-0.5" checked={srcChecked} onChange={(e) => setSrcChecked(e.target.checked)} />I opened every source and checked that it supports what the video says.</label>
+                <button className={`${btn(true)} w-full`} disabled={!vSources.trim() || SRC_NONE.test(vSources) || !srcChecked} onClick={() => { setVDesc(addSources(vDesc, vSources)); setMsg("Sources added to the description. Press the button again after you edit them."); }}>Add sources to the description</button>
+                <button className={`${btn()} w-full`} disabled={!hasSources(vDesc)} onClick={() => { setVDesc(dropSources(vDesc)); setMsg("Sources removed from the description."); }}>Remove sources from the description</button>
+              </Section>
+
+              <Section title="6. Tags" note={vTags.trim() ? "✓ done" : ""} defaultOpen>
                 <Field l={`Tags, separated by commas (${vTags.length}/500)`}><textarea className={inp} rows={3} value={vTags} onChange={(e) => setVTags(e.target.value)} placeholder="e.g. honey bee, nature, documentary" /></Field>
                 <button className={`${btn()} w-full`} disabled={!vTags.trim()} onClick={() => void copyText(vTags.trim(), "Tags")}>Copy tags</button>
                 <p className="text-xs text-slate-500">In YouTube Studio, tags are under “Show more”.</p>
               </Section>
 
-              <Section title="6. Thumbnail" note={thumbText.trim() ? "✓ done" : ""} defaultOpen>
+              <Section title="7. Thumbnail" note={thumbText.trim() ? "✓ done" : ""} defaultOpen>
                 <Field l="Thumbnail text"><input className={inp} value={thumbText} onChange={(e) => setThumbText(e.target.value)} placeholder="3–5 words" /></Field>
                 <canvas ref={thumbRef} width={1280} height={720} className="w-full rounded-md" />
                 <button className={`${btn()} w-full`} onClick={grabFrame}>Use current preview frame</button>
                 <button className={`${btn(true)} w-full`} onClick={() => void downloadThumb()}>Download thumbnail</button>
               </Section>
 
-              <Section title="7. Thumbnail picture prompt (optional)" note={thumbScene.trim() && thumbSetting.trim() ? "✓ ready" : ""}>
+              <Section title="8. Thumbnail picture prompt (optional)" note={thumbScene.trim() && thumbSetting.trim() ? "✓ ready" : ""}>
                 <p className="text-xs text-slate-500">Optional. Fill the details yourself, or let an AI draft them from your script. The thumbnail text above is used as the headline.</p>
                 <button className={`${btn()} w-full`} disabled={!scriptForThumb.trim()} onClick={() => void copyText(thumbFillPrompt({ topic: thumbFields.topic, script: scriptForThumb }), "Request")}>Copy request: ask an AI to fill the details</button>
                 <Field l="Paste the AI's reply here"><textarea className={inp} rows={3} value={thumbReply} onChange={(e) => setThumbReply(e.target.value)} /></Field>
@@ -1949,17 +1987,17 @@ DELIVERY: voiceover
                 <p className="text-xs text-slate-500">Paste it into your image generator and attach your reference thumbnail so the look stays the same. Then check the spelling of the headline.</p>
               </Section>
 
-              <Section title="8. Captions file (subtitles)">
+              <Section title="9. Captions file (subtitles)">
                 <button className={`${btn(true)} w-full`} disabled={!scenes.some((x) => x.text.trim())} onClick={downloadCaptions}>Download captions file (.srt)</button>
                 <p className="text-xs text-slate-500">{captionsEstimated ? "Timing is estimated, because the voiceover was not recorded by the app. " : "Timing matches your recorded voiceover. "}In YouTube Studio, open Subtitles, then Add language, then Upload file. The captions already in the picture stay as they are; this file lets viewers turn captions on and off.</p>
               </Section>
 
-              <Section title="9. Pinned comment">
+              <Section title="10. Pinned comment">
                 <Field l="Post this as the first comment, then pin it"><textarea className={inp} rows={3} value={pinnedText} onChange={(e) => setPinned(e.target.value)} /></Field>
                 <button className={`${btn()} w-full`} onClick={() => void copyText(pinnedText, "Comment")}>Copy comment</button>
               </Section>
 
-              <Section title="10. Settings in YouTube (tick each when done)">
+              <Section title="11. Settings in YouTube (tick each when done)">
                 {([
                   ["kids", "Audience: choose whether the video is made for kids."],
                   ["ai", "Altered content: if the voice or pictures look real but were made with AI, answer Yes. Check YouTube's current rules."],
