@@ -746,6 +746,20 @@ const btn = (p = false) => `rounded-md px-3 py-1.5 text-sm font-medium disabled:
 const Field = ({ l, children }: { l: string; children: ReactNode }) => (
   <label className="block"><span className="mb-1 block text-xs text-slate-400">{l}</span>{children}</label>
 );
+
+// A titled box that can be folded away, so long tabs stay short. "note" is a small status shown on the right.
+function Section({ title, note, defaultOpen, children }: { title: string; note?: string; defaultOpen?: boolean; children: ReactNode }) {
+  const [open, setOpen] = useState(!!defaultOpen);
+  return (
+    <details open={open} onToggle={(e) => setOpen(e.currentTarget.open)} className="rounded-md border border-slate-800">
+      <summary className="flex cursor-pointer items-center justify-between gap-2 p-3 text-sm font-semibold">
+        <span>{open ? "▾" : "▸"} {title}</span>
+        {note && <span className={`text-xs font-normal ${note.startsWith("✓") ? "text-emerald-400" : "text-slate-400"}`}>{note}</span>}
+      </summary>
+      <div className="space-y-3 border-t border-slate-800 p-3">{children}</div>
+    </details>
+  );
+}
 const PLACEHOLDER = "Paste a script in the Create tab and press Generate video.";
 const STEPS = ["Read script", "Voiceover and music", "Find visuals", "Render video"];
 
@@ -1685,71 +1699,72 @@ DELIVERY: voiceover
           </nav>
           <div ref={sideScroll} className="vtx-side-inner min-h-0 flex-1 space-y-4 overflow-y-auto p-3 sm:p-4">
             {tab === "create" && (<>
-              <Field l="Video topic or title"><input className={inp} value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="e.g. 5 habits for productivity" /></Field>
+              <Section title="1. Script" defaultOpen>
+                <Field l="Video topic or title"><input className={inp} value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="e.g. 5 habits for productivity" /></Field>
 
-              <div className="space-y-3 rounded-md border border-slate-800 p-3">
-                <p className="text-sm font-medium">Get a script from Claude, ChatGPT or any AI</p>
-                <div className="grid grid-cols-2 gap-3">
-                  <Field l="Tone"><select className={inp} value={tone} onChange={(e) => setTone(e.target.value)}>{["Friendly", "Professional", "Energetic", "Calm", "Funny"].map((x) => <option key={x}>{x}</option>)}</select></Field>
-                  <Field l="Length (minutes)"><input type="number" min={fmt === "short" ? 1 : 2} max={fmt === "short" ? 3 : 15} className={inp} value={minutes} onChange={(e) => setMinutes(Math.max(fmt === "short" ? 1 : 2, +e.target.value))} /></Field>
-                </div>
-                <Field l="Minimum video length (seconds)"><input type="number" min={0} step={10} className={inp} value={minSec} onChange={(e) => setMinSec(Math.max(0, +e.target.value))} /></Field>
-                <Field l={`Speaking pace: ${wpm} wpm`}><input type="range" min={110} max={190} value={wpm} onChange={(e) => setWpm(+e.target.value)} className="w-full accent-violet-500" /></Field>
-                <button className={`${btn()} w-full`} onClick={copyPrompt}>Copy prompt for AI</button>
-                <details className="text-xs text-slate-400">
-                  <summary className="cursor-pointer">Show prompt</summary>
-                  <textarea readOnly className={`${inp} mt-2 h-40 text-xs`} value={aiPrompt} />
-                </details>
-              </div>
+                <Section title="Get a script from Claude, ChatGPT or any AI" note={scriptText.trim() ? "optional" : ""} defaultOpen={!scriptText.trim()}>
+                  <div className="grid grid-cols-2 gap-3">
+                    <Field l="Tone"><select className={inp} value={tone} onChange={(e) => setTone(e.target.value)}>{["Friendly", "Professional", "Energetic", "Calm", "Funny"].map((x) => <option key={x}>{x}</option>)}</select></Field>
+                    <Field l="Length (minutes)"><input type="number" min={fmt === "short" ? 1 : 2} max={fmt === "short" ? 3 : 15} className={inp} value={minutes} onChange={(e) => setMinutes(Math.max(fmt === "short" ? 1 : 2, +e.target.value))} /></Field>
+                  </div>
+                  <Field l="Minimum video length (seconds)"><input type="number" min={0} step={10} className={inp} value={minSec} onChange={(e) => setMinSec(Math.max(0, +e.target.value))} /></Field>
+                  <Field l={`Speaking pace: ${wpm} wpm`}><input type="range" min={110} max={190} value={wpm} onChange={(e) => setWpm(+e.target.value)} className="w-full accent-violet-500" /></Field>
+                  <button className={`${btn()} w-full`} onClick={copyPrompt}>Copy prompt for AI</button>
+                  <details className="text-xs text-slate-400">
+                    <summary className="cursor-pointer">Show prompt</summary>
+                    <textarea readOnly className={`${inp} mt-2 h-40 text-xs`} value={aiPrompt} />
+                  </details>
+                </Section>
 
-              <Field l="Paste the script here">
-                <textarea className={inp} rows={8} value={scriptText} onChange={(e) => setScriptText(e.target.value)} placeholder={"Paste AI script reply here..."} />
-              </Field>
-              <Field l="Visual source">
-                <select className={inp} value={source} onChange={(e) => setSource(e.target.value as Source)}>
-                  <option value="mix">Both: AI images + stock video (free, recommended)</option>
-                  <option value="ai">AI photoreal images only (free, no key)</option>
-                  <option value="stock">Stock footage (Pexels and Pixabay; AI pictures fill any gaps)</option>
-                </select>
-              </Field>
-              <Field l="Picture style (for AI pictures)">
-                <select className={inp} value={styleId} onChange={(e) => setStyleId(e.target.value as StyleId)}>
-                  {(Object.keys(STYLE_NAMES) as StyleId[]).map((k) => <option key={k} value={k}>{STYLE_NAMES[k]}</option>)}
-                </select>
-              </Field>
-              <textarea aria-label="Picture style wording" rows={5} className={`${inp} text-xs`} readOnly={styleId !== "custom"} value={styleId === "custom" ? customStyle : picStyle} onChange={(e) => setCustomStyle(e.target.value)} />
-              <p className="text-xs text-slate-500">Used by the app's AI pictures. It does not change stock video or photos you upload. In the Scenes tab, “Copy image prompt” builds the same style into a prompt for any image generator you prefer.</p>
-              {source !== "stock" && <p className="text-xs text-slate-500">{source === "mix" ? "Each scene gets AI photos plus real video clips (the video clips come from Pexels and Pixabay, which needs their keys on the server and your access code; without them every picture is AI)." : "Each scene gets AI photos that match your VISUAL lines. "}Allow about 1 to 2 minutes per scene before rendering starts.</p>}
-              <label className="flex items-start gap-2 rounded-md border border-slate-800 p-2 text-xs text-slate-400">
-                <input type="checkbox" className="mt-0.5" checked={moving} onChange={(e) => setMoving(e.target.checked)} />
-                <span><b className="text-slate-200">Use moving video footage.</b> Finds multiple video clips per scene. Rich visual assets automatically fill in to pack every scene with high visual variety.</span>
-              </label>
-              <label className="flex items-start gap-2 rounded-md border border-slate-800 p-2 text-xs text-slate-400">
-                <input type="checkbox" className="mt-0.5" checked={autoMusic} onChange={(e) => setAutoMusic(e.target.checked)} />
-                <span><b className="text-slate-200">Add background music automatically.</b> Generate video makes a music track in the style below and keeps it quietly under the voiceover, so the voice stays clear.</span>
-              </label>
-              <Field l="Music-only start (seconds before the voice and captions begin)"><select className={inp} value={leadSec} onChange={(e) => setLeadSec(+e.target.value)}>{[0, 2, 3, 4, 5, 6, 8].map((n) => <option key={n} value={n}>{n === 0 ? "None, voice starts at once" : `${n} seconds`}</option>)}</select></Field>
-              <Field l="Music style"><select className={inp} value={musicStyle} onChange={(e) => setMusicStyle(e.target.value as MusicStyle)}>{MUSIC_STYLES.map((m) => <option key={m.id} value={m.id}>{m.label} ({m.note})</option>)}</select></Field>
-              <Field l="Pictures that do not match the video shape">
-                <select className={inp} value={fit} onChange={(e) => setFit(e.target.value as Fit)}>
-                  <option value="blur">Whole picture over a blurred background</option>
-                  <option value="fill">Fill the frame (crops the edges)</option>
-                  <option value="plain">Whole picture on a plain dark background</option>
-                </select>
-              </Field>
-              <p className="text-xs text-slate-500">This affects things like upright phone photos in a wide video. Pictures close to the video's shape always fill the frame. For upright photos, the vertical (Shorts) format fills the screen with no bars.</p>
-              <button className={`${btn(true)} w-full !py-2.5`} disabled={busy || exporting} onClick={generateVideo}>{busy || exporting ? "Working…" : "Generate video"}</button>
-              <button className={`${btn()} w-full`} disabled={busy || exporting} onClick={loadOnly}>Load script into scenes only</button>
-              <button className={`${btn()} w-full`} disabled={busy || exporting} onClick={() => { if (window.confirm("Clear the saved project and start fresh?")) { try { localStorage.removeItem(SAVE_KEY); } catch { /* ignore */ } window.location.reload(); } }}>Start a new project</button>
-              <p className="text-xs text-slate-500">Your script, scenes and settings are saved in this browser. Pictures, clips and audio are not saved, so they are fetched again after a refresh.</p>
-              {stage > 0 && (
-                <ul className="space-y-1 text-sm">
-                  {STEPS.map((s, i) => {
-                    const n = i + 1, done = stage > n, act = stage === n;
-                    return <li key={s} className={done ? "text-emerald-400" : act ? "text-white" : "text-slate-600"}>{done ? "✓" : act ? "…" : "○"} {s}</li>;
-                  })}
-                </ul>
-              )}
+                <Field l="Paste the script here">
+                  <textarea className={inp} rows={8} value={scriptText} onChange={(e) => setScriptText(e.target.value)} placeholder={"Paste AI script reply here..."} />
+                </Field>
+              </Section>
+
+              <Section title="2. Pictures" defaultOpen>
+                <Field l="Visual source">
+                  <select className={inp} value={source} onChange={(e) => setSource(e.target.value as Source)}>
+                    <option value="mix">Both: AI images + stock video (free, recommended)</option>
+                    <option value="ai">AI photoreal images only (free, no key)</option>
+                    <option value="stock">Stock footage (Pexels and Pixabay; AI pictures fill any gaps)</option>
+                  </select>
+                </Field>
+                <Field l="Picture style (for AI pictures)">
+                  <select className={inp} value={styleId} onChange={(e) => setStyleId(e.target.value as StyleId)}>
+                    {(Object.keys(STYLE_NAMES) as StyleId[]).map((k) => <option key={k} value={k}>{STYLE_NAMES[k]}</option>)}
+                  </select>
+                </Field>
+                <textarea aria-label="Picture style wording" rows={5} className={`${inp} text-xs`} readOnly={styleId !== "custom"} value={styleId === "custom" ? customStyle : picStyle} onChange={(e) => setCustomStyle(e.target.value)} />
+                <p className="text-xs text-slate-500">Used by the app's AI pictures. It does not change stock video or photos you upload. In the Scenes tab, “Copy image prompt” builds the same style into a prompt for any image generator you prefer.</p>
+                {source !== "stock" && <p className="text-xs text-slate-500">{source === "mix" ? "Each scene gets AI photos plus real video clips (the video clips come from Pexels and Pixabay, which needs their keys on the server and your access code; without them every picture is AI)." : "Each scene gets AI photos that match your VISUAL lines. "}Allow about 1 to 2 minutes per scene before rendering starts.</p>}
+                <label className="flex items-start gap-2 rounded-md border border-slate-800 p-2 text-xs text-slate-400">
+                  <input type="checkbox" className="mt-0.5" checked={moving} onChange={(e) => setMoving(e.target.checked)} />
+                  <span><b className="text-slate-200">Use moving video footage.</b> Finds multiple video clips per scene. Rich visual assets automatically fill in to pack every scene with high visual variety.</span>
+                </label>
+                <Field l="Pictures that do not match the video shape">
+                  <select className={inp} value={fit} onChange={(e) => setFit(e.target.value as Fit)}>
+                    <option value="blur">Whole picture over a blurred background</option>
+                    <option value="fill">Fill the frame (crops the edges)</option>
+                    <option value="plain">Whole picture on a plain dark background</option>
+                  </select>
+                </Field>
+                <p className="text-xs text-slate-500">This affects things like upright phone photos in a wide video. Pictures close to the video's shape always fill the frame. For upright photos, the vertical (Shorts) format fills the screen with no bars.</p>
+              </Section>
+
+              <Section title="3. Generate" defaultOpen>
+                <button className={`${btn(true)} w-full !py-2.5`} disabled={busy || exporting} onClick={generateVideo}>{busy || exporting ? "Working…" : "Generate video"}</button>
+                <button className={`${btn()} w-full`} disabled={busy || exporting} onClick={loadOnly}>Load script into scenes only</button>
+                <button className={`${btn()} w-full`} disabled={busy || exporting} onClick={() => { if (window.confirm("Clear the saved project and start fresh?")) { try { localStorage.removeItem(SAVE_KEY); } catch { /* ignore */ } window.location.reload(); } }}>Start a new project</button>
+                <p className="text-xs text-slate-500">Your script, scenes and settings are saved in this browser. Pictures, clips and audio are not saved, so they are fetched again after a refresh.</p>
+                {stage > 0 && (
+                  <ul className="space-y-1 text-sm">
+                    {STEPS.map((s, i) => {
+                      const n = i + 1, done = stage > n, act = stage === n;
+                      return <li key={s} className={done ? "text-emerald-400" : act ? "text-white" : "text-slate-600"}>{done ? "✓" : act ? "…" : "○"} {s}</li>;
+                    })}
+                  </ul>
+                )}
+              </Section>
               <details className="rounded-md border border-slate-800 p-3 text-sm">
                 <summary className="cursor-pointer text-slate-300">Server access (optional)</summary>
                 <div className="mt-3 space-y-3">
@@ -1828,6 +1843,11 @@ DELIVERY: voiceover
                 <button className={btn()} disabled={!voiceDur} onClick={fitVoice}>Fit scenes to voiceover</button>
               </>)}
               <h3 className="border-t border-slate-800 pt-4 text-sm font-semibold">Background music</h3>
+              <label className="flex items-start gap-2 rounded-md border border-slate-800 p-2 text-xs text-slate-400">
+                <input type="checkbox" className="mt-0.5" checked={autoMusic} onChange={(e) => setAutoMusic(e.target.checked)} />
+                <span><b className="text-slate-200">Add background music automatically.</b> Generate video makes a music track in the style chosen below and keeps it quietly under the voiceover, so the voice stays clear.</span>
+              </label>
+              <Field l="Music-only start (seconds before the voice and captions begin)"><select className={inp} value={leadSec} onChange={(e) => setLeadSec(+e.target.value)}>{[0, 2, 3, 4, 5, 6, 8].map((n) => <option key={n} value={n}>{n === 0 ? "None, voice starts at once" : `${n} seconds`}</option>)}</select></Field>
               <Field l="Built-in music style"><select className={inp} value={musicStyle} onChange={(e) => setMusicStyle(e.target.value as MusicStyle)}>{MUSIC_STYLES.map((m) => <option key={m.id} value={m.id}>{m.label} ({m.note})</option>)}</select></Field>
               <button className={btn(true)} disabled={makingMusic} onClick={() => void makeBgMusic()}>{makingMusic ? "Making music…" : "Make background music"}</button>
               <p className="text-xs text-slate-500">Made on your device, so there is nothing to download and no licence to worry about. It is a short loop of simple synthesised instruments, so expect a plain backing track, not a studio recording. You can make another style to replace it.</p>
@@ -1855,26 +1875,26 @@ DELIVERY: voiceover
             </>)}
 
             {tab === "publish" && (<>
-              <div className="space-y-2 rounded-md border border-slate-800 p-3">
-                <h3 className="text-sm font-semibold">Publish pack</h3>
+              <Section title="Publish checklist" note={`${checks.filter((c) => c.ok).length} of ${checks.length} passed`}>
                 <p className="text-xs text-slate-400">Everything YouTube asks for, in the order you meet it. Copy each item into YouTube. {checks.filter((c) => c.ok).length} of {checks.length} checks passed.</p>
                 <ul className="space-y-1 text-xs">
                   {checks.map((c) => <li key={c.t} className={c.ok ? "text-emerald-400" : "text-slate-500"}>{c.ok ? "✓" : "○"} {c.t}</li>)}
                 </ul>
-              </div>
+              </Section>
 
-              <div className="space-y-2 rounded-md border border-slate-800 p-3">
-                <h3 className="text-sm font-semibold">1. Video file</h3>
+              <Section title="1. Video file" note={file ? "✓ ready" : "render first"} defaultOpen>
                 {file ? <>
                   <a href={file.url} download={file.name} className={`${btn(true)} block w-full text-center`}>Download {file.name.split(".").pop()?.toUpperCase()} video ({file.mb.toFixed(1)} MB)</a>
                   <a href={file.url} target="_blank" rel="noreferrer" className="block text-center text-xs text-violet-300 underline">Download not starting? Open the video, then use the ⋮ menu → Download</a>
                 </> : <button className={`${btn(true)} w-full`} disabled>Download video (render it first)</button>}
                 <button className={`${btn()} w-full`} disabled={!file} onClick={() => void shareVideo()}>{file ? `Share video (${file.name.split(".").pop()?.toUpperCase()}, ${file.mb.toFixed(1)} MB)` : "Share video (render it first)"}</button>
-                <p className="text-xs text-slate-500">Share opens your phone's share menu (WhatsApp, Telegram, Google Drive and more). Only the video file is sent, not the text. It goes straight from this device to the app you pick; this app does not upload or host it. Desktop browsers often cannot share files, so use Download there.</p>
-              </div>
+                <details className="text-xs text-slate-400">
+                  <summary className="cursor-pointer">How sharing works</summary>
+                  <p className="mt-2 text-slate-500">Share opens your phone's share menu (WhatsApp, Telegram, Google Drive and more). Only the video file is sent, not the text. It goes straight from this device to the app you pick; this app does not upload or host it. Desktop browsers often cannot share files, so use Download there.</p>
+                </details>
+              </Section>
 
-              <div className="space-y-3 rounded-md border border-slate-800 p-3">
-                <h3 className="text-sm font-semibold">2. Write everything with any AI</h3>
+              <Section title="2. Write everything with any AI" note={vDesc.trim() ? "✓ done" : ""} defaultOpen={!vDesc.trim()}>
                 <p className="text-xs text-slate-400">The app prepares one prompt from your script and scene times. Paste it into ChatGPT, Claude, Gemini or any AI, and it writes your title, description, tags, thumbnail text and pinned comment.</p>
                 <Field l="Notes for the AI (optional): channel name, links, language, call to action"><textarea className={inp} rows={2} value={aiNotes} onChange={(e) => setAiNotes(e.target.value)} placeholder="e.g. Channel: Bee Tales. Mention my newsletter." /></Field>
                 {noScript && <p className="rounded-md border border-amber-500/40 p-2 text-xs text-amber-300">There is no script in the app yet, so the AI would have nothing to write about. In the Create tab, paste your script and tap “Load script into scenes only” (or Generate video), then come back here.</p>}
@@ -1890,63 +1910,56 @@ DELIVERY: voiceover
                 </ol>
                 <Field l="The AI's answer"><textarea className={inp} rows={5} value={aiAnswer} onChange={(e) => setAiAnswer(e.target.value)} placeholder="Paste the AI's answer here" /></Field>
                 <button className={`${btn()} w-full`} disabled={!aiAnswer.trim()} onClick={fillFromAnswer}>Fill my boxes</button>
-              </div>
+              </Section>
 
-              <div className="space-y-2 rounded-md border border-slate-800 p-3">
-                <h3 className="text-sm font-semibold">3. Title</h3>
+              <Section title="3. Title" note={vTitle.trim() ? "✓ done" : ""} defaultOpen>
                 <Field l={`Title (${vTitle.length}/100)`}><input className={inp} value={vTitle} onChange={(e) => setVTitle(e.target.value)} /></Field>
                 <button className={`${btn()} w-full`} disabled={!vTitle.trim()} onClick={() => void copyText(vTitle.trim(), "Title")}>Copy title</button>
-              </div>
+              </Section>
 
-              <div className="space-y-2 rounded-md border border-slate-800 p-3">
-                <h3 className="text-sm font-semibold">4. Description</h3>
+              <Section title="4. Description" note={vDesc.trim() ? "✓ done" : ""} defaultOpen>
                 <Field l={`Description (${vDesc.length}/5000)`}><textarea className={inp} rows={8} value={vDesc} onChange={(e) => setVDesc(e.target.value)} /></Field>
                 <button className={`${btn(true)} w-full`} disabled={!vDesc.trim()} onClick={() => void copyText(vDesc.trim(), "Description")}>Copy description</button>
                 {fmt === "long" && <button className={`${btn()} w-full`} onClick={addChapters}>Add chapters from my scenes</button>}
                 <p className="text-xs text-slate-500">Chapters use your scene names and the real timings. Skip this button if the AI already wrote the chapters.</p>
-              </div>
+              </Section>
 
-              <div className="space-y-2 rounded-md border border-slate-800 p-3">
-                <h3 className="text-sm font-semibold">5. Tags</h3>
+              <Section title="5. Tags" note={vTags.trim() ? "✓ done" : ""} defaultOpen>
                 <Field l={`Tags, separated by commas (${vTags.length}/500)`}><textarea className={inp} rows={3} value={vTags} onChange={(e) => setVTags(e.target.value)} placeholder="e.g. honey bee, nature, documentary" /></Field>
                 <button className={`${btn()} w-full`} disabled={!vTags.trim()} onClick={() => void copyText(vTags.trim(), "Tags")}>Copy tags</button>
                 <p className="text-xs text-slate-500">In YouTube Studio, tags are under “Show more”.</p>
-              </div>
+              </Section>
 
-              <div className="space-y-2 rounded-md border border-slate-800 p-3">
-                <h3 className="text-sm font-semibold">6. Thumbnail</h3>
+              <Section title="6. Thumbnail" note={thumbText.trim() ? "✓ done" : ""} defaultOpen>
                 <Field l="Thumbnail text"><input className={inp} value={thumbText} onChange={(e) => setThumbText(e.target.value)} placeholder="3–5 words" /></Field>
                 <canvas ref={thumbRef} width={1280} height={720} className="w-full rounded-md" />
                 <button className={`${btn()} w-full`} onClick={grabFrame}>Use current preview frame</button>
                 <button className={`${btn(true)} w-full`} onClick={() => void downloadThumb()}>Download thumbnail</button>
-                <div className="space-y-2 border-t border-slate-800 pt-3">
-                  <h4 className="text-xs font-semibold text-slate-200">Thumbnail picture for an image generator</h4>
-                  <p className="text-xs text-slate-500">Optional. Fill the details yourself, or let an AI draft them from your script. The thumbnail text above is used as the headline.</p>
-                  <button className={`${btn()} w-full`} disabled={!scriptForThumb.trim()} onClick={() => void copyText(thumbFillPrompt({ topic: thumbFields.topic, script: scriptForThumb }), "Request")}>Copy request: ask an AI to fill the details</button>
-                  <Field l="Paste the AI's reply here"><textarea className={inp} rows={3} value={thumbReply} onChange={(e) => setThumbReply(e.target.value)} /></Field>
-                  <button className={`${btn()} w-full`} disabled={!thumbReply.trim()} onClick={fillThumbFields}>Fill in the details from the reply</button>
-                  <Field l="Video topic"><input className={inp} value={thumbTopic} onChange={(e) => setThumbTopic(e.target.value)} placeholder={vTitle || topic || "What the video is about"} /></Field>
-                  <Field l="Characters and scene"><textarea className={inp} rows={4} value={thumbScene} onChange={(e) => setThumbScene(e.target.value)} placeholder="Who is in the picture, how they look, and what they are doing" /></Field>
-                  <Field l="Period or setting"><input className={inp} value={thumbSetting} onChange={(e) => setThumbSetting(e.target.value)} placeholder="e.g. Strasbourg, July 1518, a cobbled town square" /></Field>
-                  <button className={`${btn(true)} w-full`} disabled={!thumbReady(thumbFields)} onClick={() => void copyText(thumbPrompt(thumbFields), "Thumbnail prompt")}>Copy thumbnail prompt</button>
-                  <p className="text-xs text-slate-500">Paste it into your image generator and attach your reference thumbnail so the look stays the same. Then check the spelling of the headline.</p>
-                </div>
-              </div>
+              </Section>
 
-              <div className="space-y-2 rounded-md border border-slate-800 p-3">
-                <h3 className="text-sm font-semibold">7. Captions file (subtitles)</h3>
+              <Section title="7. Thumbnail picture prompt (optional)" note={thumbScene.trim() && thumbSetting.trim() ? "✓ ready" : ""}>
+                <p className="text-xs text-slate-500">Optional. Fill the details yourself, or let an AI draft them from your script. The thumbnail text above is used as the headline.</p>
+                <button className={`${btn()} w-full`} disabled={!scriptForThumb.trim()} onClick={() => void copyText(thumbFillPrompt({ topic: thumbFields.topic, script: scriptForThumb }), "Request")}>Copy request: ask an AI to fill the details</button>
+                <Field l="Paste the AI's reply here"><textarea className={inp} rows={3} value={thumbReply} onChange={(e) => setThumbReply(e.target.value)} /></Field>
+                <button className={`${btn()} w-full`} disabled={!thumbReply.trim()} onClick={fillThumbFields}>Fill in the details from the reply</button>
+                <Field l="Video topic"><input className={inp} value={thumbTopic} onChange={(e) => setThumbTopic(e.target.value)} placeholder={vTitle || topic || "What the video is about"} /></Field>
+                <Field l="Characters and scene"><textarea className={inp} rows={4} value={thumbScene} onChange={(e) => setThumbScene(e.target.value)} placeholder="Who is in the picture, how they look, and what they are doing" /></Field>
+                <Field l="Period or setting"><input className={inp} value={thumbSetting} onChange={(e) => setThumbSetting(e.target.value)} placeholder="e.g. Strasbourg, July 1518, a cobbled town square" /></Field>
+                <button className={`${btn(true)} w-full`} disabled={!thumbReady(thumbFields)} onClick={() => void copyText(thumbPrompt(thumbFields), "Thumbnail prompt")}>Copy thumbnail prompt</button>
+                <p className="text-xs text-slate-500">Paste it into your image generator and attach your reference thumbnail so the look stays the same. Then check the spelling of the headline.</p>
+              </Section>
+
+              <Section title="8. Captions file (subtitles)">
                 <button className={`${btn(true)} w-full`} disabled={!scenes.some((x) => x.text.trim())} onClick={downloadCaptions}>Download captions file (.srt)</button>
                 <p className="text-xs text-slate-500">{captionsEstimated ? "Timing is estimated, because the voiceover was not recorded by the app. " : "Timing matches your recorded voiceover. "}In YouTube Studio, open Subtitles, then Add language, then Upload file. The captions already in the picture stay as they are; this file lets viewers turn captions on and off.</p>
-              </div>
+              </Section>
 
-              <div className="space-y-2 rounded-md border border-slate-800 p-3">
-                <h3 className="text-sm font-semibold">8. Pinned comment</h3>
+              <Section title="9. Pinned comment">
                 <Field l="Post this as the first comment, then pin it"><textarea className={inp} rows={3} value={pinnedText} onChange={(e) => setPinned(e.target.value)} /></Field>
                 <button className={`${btn()} w-full`} onClick={() => void copyText(pinnedText, "Comment")}>Copy comment</button>
-              </div>
+              </Section>
 
-              <div className="space-y-2 rounded-md border border-slate-800 p-3">
-                <h3 className="text-sm font-semibold">9. Settings in YouTube (tick each when done)</h3>
+              <Section title="10. Settings in YouTube (tick each when done)">
                 {([
                   ["kids", "Audience: choose whether the video is made for kids."],
                   ["ai", "Altered content: if the voice or pictures look real but were made with AI, answer Yes. Check YouTube's current rules."],
@@ -1960,7 +1973,7 @@ DELIVERY: voiceover
                     <span>{t}</span>
                   </label>
                 ))}
-              </div>
+              </Section>
             </>)}
           </div>
         </aside>
