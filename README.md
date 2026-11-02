@@ -77,6 +77,7 @@ Skipping this step leaves new class names unstyled. Plain CSS (spacing and phone
 ## Security notes
 
 - Choose a long, random `ACCESS_CODE`. After 10 wrong codes from one address in 10 minutes, that address is refused for the rest of the window. The count is kept in each server instance's memory, so it slows guessing but does not replace a strong code.
+- The studio opens only after the server accepts the access code (`src/Gate.tsx`, which asks `/api/status`). Without a code the page shows a lock screen, so there is no app to use. The code is remembered in the browser; "Lock this device" in the Create tab forgets it. This is a front door, not a vault: the page files themselves are public and nothing secret is in them (all keys stay on the server). To also hide the page files, put the site behind Cloudflare Access or a similar login. `npm run dev` skips the lock screen, because it has no server.
 - API answers are sent with `Cache-Control: no-store`.
 - `public/_headers` adds browser security headers to the web page. Its Content-Security-Policy starts in report-only mode. After one full run (Generate, voiceover, camera, Export) with no CSP messages in the browser console, rename `Content-Security-Policy-Report-Only` to `Content-Security-Policy` in that file to enforce it.
 - `npm run build` type-checks the app and, in strict mode, the server code (`server/`, `worker/`, `functions/`, `netlify/`).

@@ -11,6 +11,7 @@ import { chapterList, publishPrompt, parseAnswer, srtFile } from "./publish.ts";
 import { duckFactor, levels, rmsActive, rmsAll } from "./mix.ts";
 import { COMIC_STYLE, STYLE_NAMES, isStyleId, scenePrompt, styleText } from "./visualStyle.ts";
 import type { StyleId } from "./visualStyle.ts";
+import { btn, inp } from "./ui.ts";
 import { parseThumbFill, thumbFillPrompt, thumbPrompt, thumbReady } from "./thumbnail.ts";
 
 type Fmt = "long" | "short";
@@ -757,8 +758,6 @@ const thumbBlob = (c: HTMLCanvasElement): Promise<Blob | null> => new Promise((r
   try { go(0); } catch { res(null); }
 });
 
-const inp = "w-full rounded-md bg-slate-900 border border-slate-700 px-2.5 py-1.5 text-sm focus:outline-none focus:border-violet-500";
-const btn = (p = false) => `rounded-md px-3 py-1.5 text-sm font-medium disabled:opacity-40 ${p ? "bg-violet-600 hover:bg-violet-500" : "bg-slate-800 hover:bg-slate-700"}`;
 const Field = ({ l, children }: { l: string; children: ReactNode }) => (
   <label className="block"><span className="mb-1 block text-xs text-slate-400">{l}</span>{children}</label>
 );
@@ -1788,12 +1787,14 @@ DELIVERY: voiceover
                 )}
               </Section>
               <details className="rounded-md border border-slate-800 p-3 text-sm">
-                <summary className="cursor-pointer text-slate-300">Server access (optional)</summary>
+                <summary className="cursor-pointer text-slate-300">Access code and server</summary>
                 <div className="mt-3 space-y-3">
                   <Field l="Access code"><input type={showCode ? "text" : "password"} autoComplete="off" autoCapitalize="none" spellCheck={false} className={inp} value={code} onChange={(e) => setCode(e.target.value.trim())} /></Field>
                   <label className="flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={showCode} onChange={(e) => setShowCode(e.target.checked)} />Show the code (to check for typos)</label>
+                  <button className={`${btn()} w-full`} onClick={() => { try { localStorage.removeItem("vortex-access"); } catch { /* ignore */ } window.location.reload(); }}>Lock this device</button>
+                  <p className="text-xs text-slate-500">Locking forgets the access code on this browser, so the code is asked for again. Your script and settings stay saved here.</p>
                   {serverMsg && <p className="text-xs text-slate-300">{serverMsg}{serverMsg === "Connected." && ` AI voiceover: ${server.voice ? `on (${server.voiceProvider === "cloudflare" ? "Cloudflare, free allowance" : "OpenAI"})` : "off"}. Pexels: ${server.pexels ? "on" : "off"}. Pixabay: ${server.pixabay ? "on" : "off"}.`}</p>}
-                  <p className="text-xs text-slate-500">Provider keys live on the server and never reach this browser. Enter the access code you set there to unlock AI voiceover and Pexels or Pixabay stock footage. Without it, the app still uses free AI images and your own uploads. When Pexels or Pixabay visuals are used, a credit line is added to the description automatically. You can also upload your own clips per scene in the Scenes tab.</p>
+                  <p className="text-xs text-slate-500">Provider keys live on the server and never reach this browser. Enter the access code you set there to unlock AI voiceover and Pexels or Pixabay stock footage. When Pexels or Pixabay visuals are used, a credit line is added to the description automatically. You can also upload your own clips per scene in the Scenes tab.</p>
                 </div>
               </details>
             </>)}
