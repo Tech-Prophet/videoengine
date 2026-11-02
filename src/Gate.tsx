@@ -6,9 +6,15 @@ import { btn, inp } from "./ui.ts";
 // so the answer cannot be faked in the browser. The code is kept on this device (the same place the app reads it from),
 // so it only has to be typed once per browser.
 const KEY = "vortex-access";
+const SKEY = "vortex-session";
+// To sign everyone out at once, change this text and deploy. Every browser that signed in under an older value (or before this
+// existed) is asked for the code again the next time it opens the site. Changing ACCESS_CODE on the server also signs everyone out,
+// and is the one to use if somebody else may know the code.
+const SESSION = "2026-11-02";
 const readCode = () => { try { return localStorage.getItem(KEY) || ""; } catch { return ""; } };
-const saveCode = (c: string) => { try { localStorage.setItem(KEY, c); } catch { /* storage blocked: the code is asked for again next time */ } };
-const clearCode = () => { try { localStorage.removeItem(KEY); } catch { /* ignore */ } };
+const readSession = () => { try { return localStorage.getItem(SKEY) || ""; } catch { return ""; } };
+const saveCode = (c: string) => { try { localStorage.setItem(KEY, c); localStorage.setItem(SKEY, SESSION); } catch { /* storage blocked: the code is asked for again next time */ } };
+const clearCode = () => { try { localStorage.removeItem(KEY); localStorage.removeItem(SKEY); } catch { /* ignore */ } };
 
 type Verdict = { kind: "ok" } | { kind: "wrong" } | { kind: "limited" | "setup" | "down"; msg: string };
 const DOWN = "Could not reach the server. The studio only opens on the hosted site (Netlify or Cloudflare), and needs a connection to check your code.";
@@ -28,10 +34,19 @@ async function check(code: string): Promise<Verdict> {
 
 type Phase = "checking" | "locked" | "down" | "open";
 
-export default function Gate({ children }: { children: ReactNode }) {
+// Where to start. A saved code from an older sign-in version is thrown away before anything is checked.
+const start = (): { phase: Phase; msg: string } => {
   // "npm run dev" has no server to ask, so the lock screen is skipped there. A production build never skips it.
-  const [phase, setPhase] = useState<Phase>(() => (import.meta.env.DEV ? "open" : readCode() ? "checking" : "locked"));
-  const [msg, setMsg] = useState("");
+  if (import.meta.env.DEV) return { phase: "open", msg: "" };
+  if (!readCode()) return { phase: "locked", msg: "" };
+  if (readSession() !== SESSION) { clearCode(); return { phase: "locked", msg: "You were signed out. Enter the access code to sign in again." }; }
+  return { phase: "checking", msg: "" };
+};
+
+export default function Gate({ children }: { children: ReactNode }) {
+  const [boot] = useState(start);
+  const [phase, setPhase] = useState<Phase>(boot.phase);
+  const [msg, setMsg] = useState(boot.msg);
   const [code, setCode] = useState("");
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
