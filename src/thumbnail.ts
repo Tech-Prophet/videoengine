@@ -1,4 +1,4 @@
-// The thumbnail picture prompt. The wording is the user's own and is kept exactly as written;
+// The thumbnail picture prompt. The wording is the user's own and is kept exactly as written (plus one lettering sentence they asked to add);
 // only the four bracketed blanks at the bottom are replaced with the current video's details.
 
 const BLANKS = {
@@ -23,7 +23,7 @@ BACKGROUND:
 Use a clean white or very light background. Include relevant historical architecture, landscapes, buildings, objects, symbols, and environmental details that help communicate the topic. Keep the background visually interesting but uncluttered.
 
 TEXT AND TYPOGRAPHY:
-Display the supplied thumbnail title in large, bold, black, traditional serif typography. Make the text highly readable, with strong visual presence. Position it on the left side or upper section, depending on the composition. Do not allow characters to obscure the text.
+Display the supplied thumbnail title in large, bold, black, traditional serif typography. Make the text highly readable, with strong visual presence. Position it on the left side or upper section, depending on the composition. Do not allow characters to obscure the text. Match the lettering of the reference thumbnail exactly: the same typeface style, weight, letter spacing, line spacing and thin white outline.
 
 COMPOSITION:
 Create a balanced, eye-catching layout. Characters should occupy a substantial portion of the thumbnail, with expressive faces and clear interactions. The text and illustrations must work together as one composition. Ensure the main characters are recognizable even at small mobile-screen sizes.
