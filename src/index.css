@@ -1,3 +1,12 @@
+/* Montserrat Black, used for the intro and ending text. Bundled so the page loads fonts only from its own site (see README). */
+@font-face {
+  font-family: "Montserrat";
+  font-style: normal;
+  font-weight: 900;
+  font-display: swap;
+  src: url("./assets/fonts/montserrat-latin-900-normal.woff2") format("woff2");
+}
+
 :root {
   --text: #6b6375;
   --text-h: #08060d;
