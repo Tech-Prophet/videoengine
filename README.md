@@ -82,6 +82,10 @@ Skipping this step leaves new class names unstyled. Plain CSS (spacing and phone
 - `public/_headers` adds browser security headers to the web page. Its Content-Security-Policy starts in report-only mode. After one full run (Generate, voiceover, camera, Export) with no CSP messages in the browser console, rename `Content-Security-Policy-Report-Only` to `Content-Security-Policy` in that file to enforce it.
 - `npm run build` type-checks the app and, in strict mode, the server code (`server/`, `worker/`, `functions/`, `netlify/`).
 
+## Promo Short
+
+The Publish tab has a Promo Short section. It makes a tall 30 to 45 second teaser from a finished video, to promote it. The app cannot watch the video, so it builds a request listing every spoken sentence with its length; you paste that into any AI, which names the most suspenseful passage (START and END sentence numbers). You can nudge the start and end by one sentence, and the passage is always whole sentences, so the voice is not cut mid-word. The app then records that passage with the same voice, pictures and captions, in the tall format, and finishes on a "WATCH THE FULL STORY" screen with two arrows that point down. Story time is 28 to 41 seconds, plus 3.5 seconds for the end screen. Like any export it records in real time, so the tab must stay in front. Pictures made for a wide video are shown over a blurred copy of themselves. The related-video link is added in YouTube Studio after upload; the app cannot do that.
+
 ## Fonts
 
 The intro and ending text use Montserrat Black. The font file (`src/assets/fonts/montserrat-latin-900-normal.woff2`, about 18 KB, Latin letters only) is bundled with the app rather than loaded from Google, because the page only loads files from its own site. Montserrat is free under the SIL Open Font License (`src/assets/fonts/Montserrat-OFL-LICENSE.txt`). Letters outside the Latin set fall back to Inter. Captions still use Inter.
