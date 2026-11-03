@@ -7,6 +7,8 @@ import { XFD, fillsFrame, moveFor, motionP, pose } from "./motion.ts";
 import type { Move } from "./motion.ts";
 import { drawCaption } from "./captions.ts";
 import { drawTitle } from "./title.ts";
+import { drawEndCard } from "./endCard.ts";
+import { CARD_SECONDS, PROMO_MAX, PROMO_MIN, fitPassage, parsePromoReply, passageOf, promoBeats, promoRequest, promoState } from "./promo.ts";
 import { chapterList, publishPrompt, parseAnswer, srtFile } from "./publish.ts";
 import { duckFactor, levels, rmsActive, rmsAll } from "./mix.ts";
 import { COMIC_STYLE, STYLE_NAMES, isStyleId, scenePrompt, styleText } from "./visualStyle.ts";
@@ -25,7 +27,8 @@ type Mark = { at: number; len: number; text: string }; // one narrated sentence:
 type Scene = Draft & { id: string; duration: number; palette: number; clips: Clip[]; marks?: Mark[] };
 type Meta = { title?: string; description?: string; tags?: string[]; thumb?: string; intro?: string };
 type Parsed = { meta: Meta; scenes: Draft[] };
-type Live = { scenes: Scene[]; starts: number[]; total: number; fit: Fit; caps: boolean; W: number; H: number; intro: string; voiceVol: number; musicVol: number; duck: boolean; lead: number; tail: number; outro: string; introColor: string; accent: string; fps: number };
+type Live = { scenes: Scene[]; starts: number[]; total: number; fit: Fit; caps: boolean; W: number; H: number; intro: string; voiceVol: number; musicVol: number; duck: boolean; lead: number; tail: number; outro: string; introColor: string; accent: string; fps: number; from: number; card: number };
+// from: where the recording starts (0 for a whole video). card: when the Promo Short end screen begins (0 = none).
 
 const PALETTES = [["#1b1442", "#6d3df0"], ["#0b1f33", "#13a8c9"], ["#0f2a22", "#2fb67c"], ["#3a1212", "#e8643a"], ["#1d1d3a", "#d6458f"]];
 const FONT = "Inter, system-ui, sans-serif";
@@ -718,7 +721,8 @@ function drawFrame(ctx: CanvasRenderingContext2D, L: Live, i: number, tt: number
   const sc = L.scenes[i];
   if (!sc) { ctx.fillStyle = "#05060d"; ctx.fillRect(0, 0, w, h); return; }
   const u = Math.min(w, h) / 1080;
-  const local = tt - L.starts[i];
+  const te = L.card > 0 && tt >= L.card ? L.card - 0.05 : tt; // the picture holds still behind the end screen
+  const local = te - L.starts[i];
   const XF = XFD;
   if (i > 0 && local < XF) {
     const pv = L.scenes[i - 1];
@@ -739,7 +743,7 @@ function drawFrame(ctx: CanvasRenderingContext2D, L: Live, i: number, tt: number
   if (L.outro && L.tail > 0 && tt > L.total - L.tail + 0.3 && tt < L.total - 0.6)
     drawTitle(ctx, w, L.outro, { size: 92 * u, cy: h * 0.45, color: L.introColor, accent: L.accent, family: TITLE_FONT, alpha: Math.max(0, Math.min(1, (tt - (L.total - L.tail + 0.3)) / 0.7)) });
 
-  if (L.caps && sc.text) {
+  if (L.caps && sc.text && !(L.card > 0 && tt >= L.card)) {
     const cues = cuesOf(sc);
     let ci = 0;
     cues.forEach((c, k) => { if (local >= c.t0 - 0.05) ci = k; });
@@ -752,7 +756,9 @@ function drawFrame(ctx: CanvasRenderingContext2D, L: Live, i: number, tt: number
     }
   }
 
-  const fade = tt < 0.5 ? 1 - tt / 0.5 : L.total - tt < 0.6 ? 1 - (L.total - tt) / 0.6 : 0;
+  if (L.card > 0 && tt >= L.card) drawEndCard(ctx, w, h, tt - L.card, { accent: L.accent, family: TITLE_FONT });
+  const ft = tt - L.from;
+  const fade = ft < 0.5 ? 1 - ft / 0.5 : L.total - tt < 0.6 ? 1 - (L.total - tt) / 0.6 : 0;
   if (fade > 0) { ctx.globalAlpha = Math.min(1, fade); ctx.fillStyle = "#000"; ctx.fillRect(0, 0, w, h); ctx.globalAlpha = 1; }
 }
 
@@ -868,6 +874,10 @@ export default function App() {
   const [thumbMb, setThumbMb] = useState<number | null>(null);
   const [thumbClip, setThumbClip] = useState("");
   const [thumbBump, setThumbBump] = useState(0);
+  const [promoReply, setPromoReply] = useState(""); // the AI's answer naming the passage for the Promo Short
+  const [promoPick, setPromoPick] = useState<{ start: number; end: number; note: string; why: string } | null>(null);
+  const [promoWin, setPromoWin] = useState<{ a: number; b: number } | null>(null); // set only while the Short is being recorded
+  const [promoFile, setPromoFile] = useState<{ url: string; name: string; mb: number; blob: Blob } | null>(null);
 
   const frameRef = useRef<HTMLCanvasElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -881,6 +891,7 @@ export default function App() {
   const playingRef = useRef(false);
   const onEnd = useRef<(() => void) | null>(null);
   const exportStart = useRef<number | null>(null);
+  const promoStage = useRef(0); // the step shown before a Promo Short started recording, restored afterwards
   const capture = useRef<{ req: () => void; frames: number } | null>(null); // while rendering: pushes each drawn picture into the recording
   const acRef = useRef<AudioContext | null>(null);
   const tracks = useRef<Record<string, { el: HTMLAudioElement; gain: GainNode }>>({});
@@ -890,7 +901,7 @@ export default function App() {
   const clipGain = useRef<GainNode | null>(null);
   const clipNodes = useRef<Map<HTMLVideoElement, MediaElementAudioSourceNode>>(new Map());
 
-  const [W, H] = dims(fmt, res); // the size of the finished video
+  const [W, H] = dims(promoWin ? "short" : fmt, res); // the size of the finished video (a Promo Short is always tall)
   // While editing, the preview is drawn smaller (a phone cannot redraw 1080p many times a second); the full size is used only while rendering.
   const previewLong = typeof window !== "undefined" && window.innerWidth >= 1024 ? 1280 : 854;
   const ps = exporting ? 1 : Math.min(1, previewLong / Math.max(W, H));
@@ -905,9 +916,13 @@ export default function App() {
   const endExtra = scenes.length ? (outro.trim() ? 5 : 3) : 0;
   const fullTotal = total + endExtra;
   const liveScenes = useMemo(() => (endExtra ? scenes.map((x, k) => (k === scenes.length - 1 ? { ...x, duration: x.duration + endExtra } : x)) : scenes), [scenes, endExtra]);
-  const live = useRef<Live>({ scenes: liveScenes, starts, total: total + endExtra, fit, caps, W: cw, H: ch, intro, voiceVol: voiceGain, musicVol: musicGain, duck: balance, lead: leadUsed, tail: endExtra, outro, introColor, accent, fps });
+  // While a Promo Short is recorded, the same scenes play from the start of the chosen passage, then the end screen follows.
+  const liveOf = (): Live => promoWin
+    ? { scenes: liveScenes, starts, total: promoWin.b + CARD_SECONDS, fit: fmt === "long" ? "blur" : fit, caps, W: cw, H: ch, intro: "", voiceVol: voiceGain, musicVol: musicGain, duck: balance, lead: 0, tail: CARD_SECONDS, outro: "", introColor, accent, fps, from: promoWin.a, card: promoWin.b }
+    : { scenes: liveScenes, starts, total: total + endExtra, fit, caps, W: cw, H: ch, intro, voiceVol: voiceGain, musicVol: musicGain, duck: balance, lead: leadUsed, tail: endExtra, outro, introColor, accent, fps, from: 0, card: 0 };
+  const live = useRef<Live>(liveOf());
   // Kept up to date after every render (the timer and the exporter read it between renders).
-  useLayoutEffect(() => { live.current = { scenes: liveScenes, starts, total: total + endExtra, fit, caps, W: cw, H: ch, intro, voiceVol: voiceGain, musicVol: musicGain, duck: balance, lead: leadUsed, tail: endExtra, outro, introColor, accent, fps }; });
+  useLayoutEffect(() => { live.current = liveOf(); });
 
   const totalWords = Math.round(minutes * wpm);
   const nScenes = fmt === "short" ? 4 : Math.max(6, Math.min(16, Math.round(minutes * 2)));
@@ -1087,9 +1102,10 @@ DELIVERY: voiceover
       if (!playingRef.current && exportStart.current === null && L === lastL && tRef.current === lastT && now - lastDraw < 400) return;
       lastL = L; lastT = tRef.current;
       const tt = Math.min(tRef.current, Math.max(0, L.total - 0.001));
+      const te = L.card > 0 && tt >= L.card ? L.card - 0.05 : tt;
       let i = 0;
-      L.starts.forEach((s, k) => { if (tt >= s) i = k; });
-      const sc = L.scenes[i], local = tt - (L.starts[i] ?? 0);
+      L.starts.forEach((s, k) => { if (te >= s) i = k; });
+      const sc = L.scenes[i], local = te - (L.starts[i] ?? 0);
       const sh = sc ? shotAt(sc, local) : null;
       const clip = sc && sh ? shotsOf(sc)[sh.k] : undefined;
       const media = clip ? mediaRef.current[clip.url] : undefined;
@@ -1117,7 +1133,7 @@ DELIVERY: voiceover
         const vt = tracks.current.voice, mt = tracks.current.music;
         // Music ducks under speech: down quickly when a sentence starts, back up slowly afterwards.
         const duck = L.duck ? duckFactor(!!(vt && vt.el.src), sc?.marks, local) : 1;
-        const vTarget = sc?.onCam ? 0 : L.voiceVol, mTarget = L.musicVol * (sc?.onCam ? 0.25 : 1) * duck
+        const vTarget = sc?.onCam || (L.card > 0 && tt >= L.card) ? 0 : L.voiceVol, mTarget = L.musicVol * (sc?.onCam ? 0.25 : 1) * duck
           * (L.lead > 0 && tt < L.lead ? 1.7 : 1) // a little more music while it plays alone at the start
           * (L.tail > 0 && tt > L.total - L.tail ? 1.3 * Math.max(0, Math.min(1, (L.total - tt) / 2.5)) : 1); // swell, then fade out at the end
         if (vt && Math.abs(vt.gain.gain.value - vTarget) > 0.001) vt.gain.gain.setTargetAtTime(vTarget, ac.currentTime, 0.03);
@@ -1323,6 +1339,28 @@ DELIVERY: voiceover
   const genericNames = [...new Set(scenes.filter((x) => x.text.trim() && CHAPTER_GENERIC.test(x.title.trim())).map((x) => x.title.trim()))];
   const pinnedText = pinned ?? `What did you think of "${vTitle.trim() || "this video"}"? Tell us in the comments.`;
   const captionsEstimated = scenes.some((x) => x.text.trim() && !x.marks?.length);
+  // Promo Short: every spoken sentence, numbered, with where it sits in the video.
+  const promoBeatList = useMemo(() => promoBeats(scenes.map((sc, k) => ({ start: starts[k], cues: sc.text.trim() ? cuesOf(sc) : [] }))), [scenes, starts]);
+  const promoAsk = promoRequest({ title: vTitle.trim() || topic.trim(), beats: promoBeatList });
+  const promoPass = promoPick ? passageOf(promoBeatList, promoPick.start, promoPick.end) : null;
+  const promoSt = promoPass ? promoState(promoPass.secs) : null;
+  const promoReady = !!promoPass && (promoSt === "ok" || promoSt === "short") && !!voiceUrl && scenes.some((x) => x.clips.length > 0);
+  const readPromoReply = () => {
+    const r = parsePromoReply(promoReply), n = promoBeatList.length;
+    if (r.start === undefined || r.end === undefined) { setMsg("Could not find START and END numbers in that reply. Ask the AI to answer in exactly the format requested."); return; }
+    if (r.end < r.start) { setMsg(`The reply puts the end (${r.end}) before the start (${r.start}). Ask the AI to pick again.`); return; }
+    if (r.start < 1 || r.end > n) { setMsg(`The reply names sentences ${r.start} to ${r.end}, but this script has sentences 1 to ${n}. Ask the AI to pick again.`); return; }
+    const f = fitPassage(promoBeatList, r.start, r.end);
+    if (f) { setPromoPick({ start: f.start, end: f.end, note: f.note, why: r.why ?? "" }); setMsg(""); }
+  };
+  const nudgePromo = (which: "start" | "end", d: number) => setPromoPick((pk) => {
+    if (!pk) return pk;
+    const n = promoBeatList.length;
+    const start = which === "start" ? Math.max(1, Math.min(pk.end, pk.start + d)) : pk.start;
+    const end = which === "end" ? Math.min(n, Math.max(pk.start, pk.end + d)) : pk.end;
+    return { ...pk, start, end, note: "" };
+  });
+  const makePromo = () => { if (promoPass && promoReady) void exportVideo(0, { a: promoPass.a, b: promoPass.b }); };
   const downloadCaptions = () => {
     const cues: { t0: number; t1: number; text: string }[] = [];
     scenes.forEach((x, k) => cuesOf(x).forEach((c) => {
@@ -1355,9 +1393,9 @@ DELIVERY: voiceover
     try { await navigator.clipboard.writeText(text); setMsg(`${what} copied.`); }
     catch { setMsg("Could not copy automatically. Press and hold the text to select and copy it by hand."); }
   };
-  const shareVideo = async () => {
-    if (!file) { setMsg("Render the video first, then share it."); return; }
-    const f = new File([file.blob], file.name, { type: file.blob.type || "video/webm" });
+  const shareVideo = async (src: { blob: Blob; name: string } | null = file) => {
+    if (!src) { setMsg("Render the video first, then share it."); return; }
+    const f = new File([src.blob], src.name, { type: src.blob.type || "video/webm" });
     try {
       if (typeof navigator.canShare === "function" && navigator.canShare({ files: [f] })) {
         // File only. Sending text with the file makes apps such as Messenger send just the text and drop the video.
@@ -1574,7 +1612,8 @@ DELIVERY: voiceover
     setTimeout(done, 1500);
   });
 
-  const exportVideo = async (attempt = 0): Promise<void> => {
+  // win = record only the Promo Short (the chosen passage and the end screen); without it the whole video is recorded.
+  const exportVideo = async (attempt = 0, win: { a: number; b: number } | null = null): Promise<void> => {
     await titleFontReady(); // so the intro is recorded in Montserrat, not a stand-in
     const c = canvasRef.current;
     if (!c || !live.current.total) return;
@@ -1586,7 +1625,13 @@ DELIVERY: voiceover
       ? MIME_CANDIDATES.map((m) => (hasAudio ? m : m.replace(/,(?:opus|aac|mp4a[^,]*)$/, ""))).find((m) => MediaRecorder.isTypeSupported(m))
       : undefined;
     if (attempt === 0 && !mime) { setMsg("This browser can't record video. Use desktop Chrome or Edge."); return; }
-    pause(); dropFile(); setExporting(true); setStage(4);
+    const prevStage = attempt === 0 ? stage : promoStage.current;
+    promoStage.current = prevStage;
+    pause(); if (!win) dropFile(); setExporting(true); setStage(4);
+    if (win) {
+      setPromoWin(win); // the preview switches to the tall size and to the passage
+      for (let k = 0; k < 60 && live.current.card !== win.b; k++) await new Promise((r) => setTimeout(r, 50));
+    }
     Object.values(mediaRef.current).forEach((el) => {
       if (el instanceof HTMLVideoElement && el.readyState < 2) { el.preload = "auto"; el.load(); el.play().then(() => el.pause()).catch(() => {}); }
     });
@@ -1597,7 +1642,7 @@ DELIVERY: voiceover
       await new Promise((res) => setTimeout(res, 100));
     }
     exportStart.current = null;
-    seek(0);
+    seek(win ? win.a : 0);
     await Promise.all(Object.values(tracks.current).map((T) => rewind(T.el)));
     const ac = ensureAc();
     await ac.resume();
@@ -1605,7 +1650,7 @@ DELIVERY: voiceover
     const dest = hasAudio ? ac.createMediaStreamDestination() : null;
     const outs: AudioNode[] = hasAudio ? [getMaster()] : [];
     if (dest) outs.forEach((g) => g.connect(dest));
-    for (let k = 0; k < 40 && c.width !== W; k++) await new Promise((r) => setTimeout(r, 50)); // wait until the canvas is full size (the preview is smaller)
+    for (let k = 0; k < 40 && c.width !== (win ? dims("short", res)[0] : W); k++) await new Promise((r) => setTimeout(r, 50)); // wait until the canvas is full size (the preview is smaller)
     // Ask for a recorded picture exactly when one has been drawn (more reliable on phones than a timer: no frozen or repeated pictures).
     const stream = c.captureStream(0);
     const vtrack = stream.getVideoTracks()[0] as (MediaStreamTrack & { requestFrame?: () => void }) | undefined;
@@ -1622,7 +1667,8 @@ DELIVERY: voiceover
     const onVis = () => { if (document.hidden) hidden = true; };
     document.addEventListener("visibilitychange", onVis);
     r.ondataavailable = (e) => e.data.size && chunks.push(e.data);
-    const safety = window.setTimeout(() => { if (r.state !== "inactive") r.stop(); }, (live.current.total + 20) * 1000);
+    const planned = live.current.total - (win ? win.a : 0);
+    const safety = window.setTimeout(() => { if (r.state !== "inactive") r.stop(); }, (planned + 20) * 1000);
     const began = performance.now();
     r.onstop = () => {
       clearTimeout(safety);
@@ -1636,10 +1682,11 @@ DELIVERY: voiceover
         if (attempt === 0) {
           setExporting(false);
           setMsg("First recording was empty. Retrying in a simpler mode (no audio in the file). Keep this tab in front.");
-          void exportVideo(1);
+          void exportVideo(1, win);
           return;
         }
-        setFile(null); setExporting(false); setStage(0);
+        if (win) setPromoWin(null); else setFile(null);
+        setExporting(false); setStage(win ? prevStage : 0);
         setMsg(`Recording failed (empty file${recErr ? `, ${recErr}` : ""}). Try desktop Chrome or Edge.`);
         return;
       }
@@ -1647,14 +1694,19 @@ DELIVERY: voiceover
       chunks.length = 0; // the recording now lives in one file; let go of the pieces
       let url = "";
       try { url = URL.createObjectURL(blob); } catch { /* reported below */ }
-      if (!url) { setExporting(false); setStage(0); setMsg("The video was recorded but this phone ran out of memory saving it. Try 720p, a shorter script, or close other apps."); return; }
-      setFile((old) => { if (old) URL.revokeObjectURL(old.url); return { url, name: `vortex-${fmt}-${res}p.${type === "video/mp4" ? "mp4" : "webm"}`, mb: blob.size / 1e6, blob }; });
-      setExporting(false); setStage(5);
-      setTab("publish"); // download and share are in the Publish tab
-      window.setTimeout(() => { setTab("publish"); sideScroll.current?.scrollTo({ top: 0 }); }, 50); // and make sure they are in view
+      if (!url) { if (win) setPromoWin(null); setExporting(false); setStage(win ? prevStage : 0); setMsg("The video was recorded but this phone ran out of memory saving it. Try 720p, a shorter script, or close other apps."); return; }
+      const ext = type === "video/mp4" ? "mp4" : "webm";
+      if (win) setPromoFile((old) => { if (old) URL.revokeObjectURL(old.url); return { url, name: `vortex-promo-short-${res}p.${ext}`, mb: blob.size / 1e6, blob }; });
+      else setFile((old) => { if (old) URL.revokeObjectURL(old.url); return { url, name: `vortex-${fmt}-${res}p.${ext}`, mb: blob.size / 1e6, blob }; });
+      if (win) setPromoWin(null);
+      setExporting(false); setStage(win ? prevStage : 5);
+      if (!win) {
+        setTab("publish"); // download and share are in the Publish tab
+        window.setTimeout(() => { setTab("publish"); sideScroll.current?.scrollTo({ top: 0 }); }, 50); // and make sure they are in view
+      }
       const gotFps = drawn / Math.max(1, took);
       const slow = drawn > 0 && gotFps < fps * 0.6 ? ` Your phone only managed about ${Math.round(gotFps)} pictures a second at ${res}p, so motion may look choppy. Try 720p, or 30 fps, for smoother results.` : "";
-      setMsg(`Recorded ${clock(took)} of ${clock(live.current.total)} planned.${slow}${hidden ? " The tab was hidden while rendering, so the video may be incomplete." : ""}${attempt > 0 ? " Saved without audio." : ""}`);
+      setMsg(`${win ? "Promo Short: recorded" : "Recorded"} ${clock(took)} of ${clock(planned)} planned.${slow}${hidden ? " The tab was hidden while rendering, so the video may be incomplete." : ""}${attempt > 0 ? " Saved without audio." : ""}`);
     };
     onEnd.current = () => { onEnd.current = null; setTimeout(() => { if (r.state !== "inactive") r.stop(); }, 400); };
     const vEl = tracks.current.voice?.el;
@@ -1666,7 +1718,7 @@ DELIVERY: voiceover
     });
     r.start(250); play();
     await started;
-    exportStart.current = performance.now() - (vEl && vEl.src ? vEl.currentTime * 1000 : 0);
+    exportStart.current = performance.now() - (vEl && vEl.src ? vEl.currentTime : win ? win.a : 0) * 1000;
   };
   useEffect(() => {
     if (!autoRender) return;
@@ -1920,6 +1972,40 @@ DELIVERY: voiceover
                 <details className="text-xs text-slate-400">
                   <summary className="cursor-pointer">How sharing works</summary>
                   <p className="mt-2 text-slate-500">Share opens your phone's share menu (WhatsApp, Telegram, Google Drive and more). Only the video file is sent, not the text. It goes straight from this device to the app you pick; this app does not upload or host it. Desktop browsers often cannot share files, so use Download there.</p>
+                </details>
+              </Section>
+
+              <Section title="Promo Short (30 to 45 seconds)" note={promoFile ? "✓ ready" : promoPass ? "passage picked" : ""}>
+                <p className="text-xs text-slate-400">A tall teaser cut from this video, to promote it. An AI picks the most suspenseful passage. The app then records it with the same voice, pictures and captions, and ends on a “Watch the full story” screen.</p>
+                {!voiceUrl && <p className="rounded-md border border-amber-500/40 p-2 text-xs text-amber-300">Make the video with a voiceover first (Generate video). The Short is cut from it.</p>}
+                <button className={`${btn()} w-full`} disabled={!voiceUrl || !promoBeatList.length} onClick={() => void copyText(promoAsk, "Request")}>Copy request: ask an AI to pick the passage</button>
+                <Field l="Paste the AI's reply here"><textarea className={inp} rows={3} value={promoReply} onChange={(e) => setPromoReply(e.target.value)} placeholder={"START: 41\nEND: 52\nWHY: ..."} /></Field>
+                <button className={`${btn()} w-full`} disabled={!promoReply.trim() || !promoBeatList.length} onClick={readPromoReply}>Use this reply</button>
+                {promoPick && promoPass && <div className="space-y-2 rounded-md border border-slate-700 p-2">
+                  <p className="text-xs text-slate-300">Sentences {promoPass.start} to {promoPass.end} of {promoBeatList.length}: <b>{Math.round(promoPass.secs)} seconds</b> of story, plus {CARD_SECONDS} seconds for the end screen.</p>
+                  {promoPick.why && <p className="text-xs text-slate-400">Why: {promoPick.why}</p>}
+                  <p className="max-h-32 overflow-y-auto rounded bg-slate-900 p-2 text-xs text-slate-300">{promoPass.text}</p>
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+                    <span>Start</span><button className={btn()} aria-label="Start one sentence earlier" onClick={() => nudgePromo("start", -1)}>−</button><button className={btn()} aria-label="Start one sentence later" onClick={() => nudgePromo("start", 1)}>+</button>
+                    <span className="ml-2">End</span><button className={btn()} aria-label="End one sentence earlier" onClick={() => nudgePromo("end", -1)}>−</button><button className={btn()} aria-label="End one sentence later" onClick={() => nudgePromo("end", 1)}>+</button>
+                  </div>
+                  {promoPick.note && <p className="text-xs text-slate-500">{promoPick.note}</p>}
+                  {promoSt === "long" && <p className="text-xs text-amber-300">Too long: a Short with its end screen must stay under 45 seconds. Move the start later or the end earlier.</p>}
+                  {promoSt === "short" && <p className="text-xs text-amber-300">Shorter than {PROMO_MIN} seconds. It will work, but a little more story makes a stronger teaser.</p>}
+                  {promoSt === "tiny" && <p className="text-xs text-amber-300">Too short to make a Short. Add more sentences.</p>}
+                  {promoPass.secs > PROMO_MAX && promoSt !== "long" && <p className="text-xs text-slate-500">Just over {PROMO_MAX} seconds, still within the limit.</p>}
+                  {captionsEstimated && <p className="text-xs text-slate-500">The voiceover was not recorded by the app, so sentence timing is estimated and the cut may land a little off. Check the result.</p>}
+                </div>}
+                <button className={`${btn(true)} w-full`} disabled={!promoReady || exporting || busy} onClick={makePromo}>{exporting && promoWin ? "Recording the Short…" : "Make the Short"}</button>
+                <p className="text-xs text-slate-500">Recording takes as long as the Short itself. Keep this tab in front until it finishes.</p>
+                {promoFile && <div className="space-y-2">
+                  <video src={promoFile.url} controls playsInline className="mx-auto max-h-96 rounded-md" />
+                  <a href={promoFile.url} download={promoFile.name} className={`${btn(true)} block w-full text-center`}>Download Short ({promoFile.mb.toFixed(1)} MB)</a>
+                  <button className={`${btn()} w-full`} onClick={() => void shareVideo(promoFile)}>Share Short</button>
+                </div>}
+                <details className="text-xs text-slate-400">
+                  <summary className="cursor-pointer">Link the Short to the full video on YouTube</summary>
+                  <p className="mt-2 text-slate-500">The “Watch the full story” arrows point at the link YouTube shows under a Short. After you upload the Short, open YouTube Studio, go to Content, open the Short, and choose your full video under Related video (menu names may differ a little). The link cannot be added from this app, and without it the arrows lead nowhere.</p>
                 </details>
               </Section>
 
