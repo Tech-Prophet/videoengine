@@ -29,6 +29,10 @@ type Live = { scenes: Scene[]; starts: number[]; total: number; fit: Fit; caps: 
 
 const PALETTES = [["#1b1442", "#6d3df0"], ["#0b1f33", "#13a8c9"], ["#0f2a22", "#2fb67c"], ["#3a1212", "#e8643a"], ["#1d1d3a", "#d6458f"]];
 const FONT = "Inter, system-ui, sans-serif";
+// The intro and ending text use Montserrat Black (bundled with the app, see index.css). A canvas does not wait for a font to
+// download, so it is requested early and again before recording; if it cannot load, Inter is used instead.
+const TITLE_FONT = `Montserrat, ${FONT}`;
+const titleFontReady = (): Promise<void> => (document.fonts ? document.fonts.load("900 64px Montserrat").then(() => undefined, () => undefined) : Promise.resolve());
 const NO_PROVIDERS = { pixabay: false, pexels: false, voice: false, voiceProvider: "" };
 const SHOT_SECONDS = 4; // A picture stays about 4 seconds: long enough to read, short enough to keep moving
 const uid = () => Math.random().toString(36).slice(2, 9);
@@ -730,10 +734,10 @@ function drawFrame(ctx: CanvasRenderingContext2D, L: Live, i: number, tt: number
   const introEnd = Math.min(L.lead > 0 ? L.lead + 0.5 : 5.5, L.scenes[0].duration - 0.3, L.total * 0.4);
   const introStart = L.lead > 0 ? 0.5 : 0.4;
   if (L.intro && tt > introStart && tt < introEnd)
-    drawTitle(ctx, w, L.intro, { size: 195 * u, cy: h * 0.42, color: L.introColor, accent: L.accent, family: FONT, alpha: Math.max(0, Math.min(1, (tt - introStart) / 0.7, (introEnd - tt) / 0.6)) });
+    drawTitle(ctx, w, L.intro, { size: 195 * u, cy: h * 0.42, color: L.introColor, accent: L.accent, family: TITLE_FONT, alpha: Math.max(0, Math.min(1, (tt - introStart) / 0.7, (introEnd - tt) / 0.6)) });
   // Ending message: typed by you, shown over the last seconds while the music rises and fades.
   if (L.outro && L.tail > 0 && tt > L.total - L.tail + 0.3 && tt < L.total - 0.6)
-    drawTitle(ctx, w, L.outro, { size: 92 * u, cy: h * 0.45, color: L.introColor, accent: L.accent, family: FONT, alpha: Math.max(0, Math.min(1, (tt - (L.total - L.tail + 0.3)) / 0.7)) });
+    drawTitle(ctx, w, L.outro, { size: 92 * u, cy: h * 0.45, color: L.introColor, accent: L.accent, family: TITLE_FONT, alpha: Math.max(0, Math.min(1, (tt - (L.total - L.tail + 0.3)) / 0.7)) });
 
   if (L.caps && sc.text) {
     const cues = cuesOf(sc);
@@ -994,6 +998,7 @@ DELIVERY: voiceover
   const seek = (s: number) => { tRef.current = Math.max(0, Math.min(s, live.current.total)); setT(tRef.current); if (playingRef.current) syncAudio(true); };
 
   useEffect(() => { try { localStorage.setItem("vortex-access", code); } catch { /* ignore */ } }, [code]);
+  useEffect(() => { void titleFontReady(); }, []);
   useEffect(() => {
     const id = window.setTimeout(() => {
       try {
@@ -1570,6 +1575,7 @@ DELIVERY: voiceover
   });
 
   const exportVideo = async (attempt = 0): Promise<void> => {
+    await titleFontReady(); // so the intro is recorded in Montserrat, not a stand-in
     const c = canvasRef.current;
     if (!c || !live.current.total) return;
     if (typeof MediaRecorder === "undefined") { setMsg("This browser can't record video. Use desktop Chrome or Edge."); return; }

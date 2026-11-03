@@ -82,6 +82,10 @@ Skipping this step leaves new class names unstyled. Plain CSS (spacing and phone
 - `public/_headers` adds browser security headers to the web page. Its Content-Security-Policy starts in report-only mode. After one full run (Generate, voiceover, camera, Export) with no CSP messages in the browser console, rename `Content-Security-Policy-Report-Only` to `Content-Security-Policy` in that file to enforce it.
 - `npm run build` type-checks the app and, in strict mode, the server code (`server/`, `worker/`, `functions/`, `netlify/`).
 
+## Fonts
+
+The intro and ending text use Montserrat Black. The font file (`src/assets/fonts/montserrat-latin-900-normal.woff2`, about 18 KB, Latin letters only) is bundled with the app rather than loaded from Google, because the page only loads files from its own site. Montserrat is free under the SIL Open Font License (`src/assets/fonts/Montserrat-OFL-LICENSE.txt`). Letters outside the Latin set fall back to Inter. Captions still use Inter.
+
 ## Known limits
 
 - Export records in real time, so the tab must stay open and in front for the full length of the video. The app asks the browser for MP4 first (best for sharing and uploading) and falls back to WebM when the browser cannot record MP4. The download button shows which one you got. MP4 recorded this way is a streaming-style MP4; it plays and uploads on common apps, but some editors may show an unknown length.
