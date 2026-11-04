@@ -10,6 +10,7 @@ import { drawTitle } from "./title.ts";
 import { drawEndCard } from "./endCard.ts";
 import { CARD_SECONDS, PROMO_MAX, PROMO_MIN, fitPassage, parsePromoReply, passageOf, promoBeats, promoRequest, promoState } from "./promo.ts";
 import { chapterList, publishPrompt, parseAnswer, srtFile } from "./publish.ts";
+import { scriptPrompt } from "./scriptPrompt.ts";
 import { duckFactor, levels, rmsActive, rmsAll } from "./mix.ts";
 import { COMIC_STYLE, STYLE_NAMES, isStyleId, scenePrompt, styleText } from "./visualStyle.ts";
 import type { StyleId } from "./visualStyle.ts";
@@ -503,7 +504,7 @@ const borrowVisuals = (list: Scene[]): Scene[] =>
 const SAVE_KEY = "vortex-project";
 type Saved = {
   v: 1; fmt: Fmt; res: number; fps: number; wpm: number; topic: string; tone: string; minutes: number; minSec: number;
-  scriptText: string; intro: string; source: Source; moving: boolean; caps: boolean; fit?: Fit; musicStyle?: MusicStyle; autoMusic?: boolean; balance?: boolean; leadSec?: number; outro?: string; introColor?: string; accent?: string; aiNotes?: string; styleId?: StyleId; customStyle?: string; thumbTopic?: string; thumbScene?: string; thumbSetting?: string; vSources?: string; srcChecked?: boolean;
+  scriptText: string; intro: string; source: Source; moving: boolean; caps: boolean; fit?: Fit; musicStyle?: MusicStyle; autoMusic?: boolean; balance?: boolean; leadSec?: number; outro?: string; introColor?: string; accent?: string; aiNotes?: string; channel?: string; withChapters?: boolean; styleId?: StyleId; customStyle?: string; thumbTopic?: string; thumbScene?: string; thumbSetting?: string; vSources?: string; srcChecked?: boolean;
   vTitle: string; vDesc: string; vTags: string; thumbText: string;
   scenes: Omit<Scene, "clips" | "marks">[];
 };
@@ -868,6 +869,8 @@ export default function App() {
   const [srcChecked, setSrcChecked] = useState(saved?.srcChecked ?? false);
   const [thumbReply, setThumbReply] = useState(""); // the AI's answer for the scene fields, pasted back
   const [aiNotes, setAiNotes] = useState(saved?.aiNotes ?? ""); // extra notes added to the prompt for any AI
+  const [channel, setChannel] = useState(saved?.channel ?? ""); // channel name, used in the script prompt's sign-off
+  const [withChapters, setWithChapters] = useState(saved?.withChapters ?? false); // chapter titles in the publish prompt (they can give the story away)
   const [aiAnswer, setAiAnswer] = useState(""); // the AI's answer, pasted back
   const [pinned, setPinned] = useState<string | null>(null); // pinned comment text (null = the suggested one)
   const [pubDone, setPubDone] = useState<Record<string, boolean>>({}); // YouTube settings you have ticked off
@@ -927,29 +930,7 @@ export default function App() {
   const totalWords = Math.round(minutes * wpm);
   const nScenes = fmt === "short" ? 4 : Math.max(6, Math.min(16, Math.round(minutes * 2)));
   const perScene = Math.round(totalWords / nScenes);
-  const aiPrompt = `Write a YouTube ${fmt === "short" ? "Short" : "video"} script about: "${topic.trim() || "[your topic]"}".
-Tone: ${tone}. The narration must run about ${minutes} minute${minutes > 1 ? "s" : ""} when read aloud: at least ${totalWords} spoken words in total, and at least ${Math.round(perScene * 0.85)} words in every scene. Do not summarise or shorten.
-${fmt === "short" ? "This is a vertical Short: hook the viewer in the first 3 seconds and keep every scene punchy." : "Hook the viewer in the first 10 seconds, state the promise of the video, give one idea per scene, and end with a short call to action."}
-Use exactly ${nScenes} scenes. Give every scene a short, specific title of 2 to 6 words that a viewer would want to click as a YouTube chapter, for example "Why Bakers Start Before Sunrise" or "A City Under Strain". Never name a scene "Hook", "Intro", "Scene 2", "Part 3", "Conclusion" or "Call to action", and do not give away the ending in a title. Write the narration as plain spoken sentences only, with no stage directions and no emojis. The video opens on a wide establishing view and closes on a wide, calm view, so keep the searches of the first and last scenes wide.
-Reply in exactly this format and nothing else:
-
-TITLE: (under 70 characters)
-INTRO TEXT: (a short line of 3 to 8 words for the opening seconds. It must match the video, but must not be the full title)
-DESCRIPTION: (2 to 3 sentences)
-TAGS: (8 to 12 tags, separated by commas)
-THUMBNAIL: (maximum 4 words)
-
-## Scene 1: (scene title)
-VISUAL: (3 different stock photo searches of 2 to 4 words each, separated by |, in the order the narration mentions them. Mix camera angles: one wide or aerial view, one close-up detail, one medium shot with people or action. Prefer real movement, such as 'person typing laptop' or 'woman walking park', over still objects)
-DELIVERY: voiceover
-(narration for this scene)
-
-## Scene 2: (scene title)
-VISUAL: ...
-DELIVERY: voiceover
-(narration for this scene)
-
-(continue until Scene ${nScenes}. Use "DELIVERY: on-camera" only for a scene where a real person must speak straight to the viewer. Otherwise always use "DELIVERY: voiceover".)`;
+  const aiPrompt = scriptPrompt({ short: fmt === "short", topic, tone, minutes, totalWords, perScene, nScenes, channel });
 
   const ensureAc = () => {
     if (!acRef.current) {
@@ -1018,14 +999,14 @@ DELIVERY: voiceover
     const id = window.setTimeout(() => {
       try {
         const data: Saved = {
-          v: 1, fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, aiNotes, styleId, customStyle, thumbTopic, thumbScene, thumbSetting, vSources, srcChecked, vTitle, vDesc, vTags, thumbText,
+          v: 1, fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, aiNotes, channel, withChapters, styleId, customStyle, thumbTopic, thumbScene, thumbSetting, vSources, srcChecked, vTitle, vDesc, vTags, thumbText,
           scenes: scenes.map((s) => ({ id: s.id, title: s.title, text: s.text, onScreen: s.onScreen, visual: s.visual, duration: s.duration, palette: s.palette })),
         };
         localStorage.setItem(SAVE_KEY, JSON.stringify(data));
       } catch { /* storage full or blocked: skip */ }
     }, 800);
     return () => clearTimeout(id);
-  }, [fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, aiNotes, styleId, customStyle, thumbTopic, thumbScene, thumbSetting, vSources, srcChecked, vTitle, vDesc, vTags, thumbText, scenes]);
+  }, [fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, aiNotes, channel, withChapters, styleId, customStyle, thumbTopic, thumbScene, thumbSetting, vSources, srcChecked, vTitle, vDesc, vTags, thumbText, scenes]);
   useEffect(() => {
     if (!code) return undefined;
     const ctl = new AbortController();
@@ -1313,7 +1294,7 @@ DELIVERY: voiceover
   const chapters = fmt === "long" ? chapterList(scenes.map((x, i) => ({ title: x.title, start: starts[i] })), fullTotal) : [];
   const noScript = scenes.every((x) => !x.text.trim() || x.text.trim() === PLACEHOLDER); // only the starter scene: nothing real to write about yet
   const promptText = publishPrompt({
-    wide: fmt === "long", tone, topic: topic.trim() || vTitle.trim(), notes: aiNotes, length: clock(fullTotal), credits: creditText, chapters,
+    wide: fmt === "long", tone, topic: topic.trim() || vTitle.trim(), notes: aiNotes, length: clock(fullTotal), credits: creditText, chapters: withChapters ? chapters : [],
     scenes: scenes.filter((x) => x.text.trim()).map((x) => ({ start: clock(starts[scenes.indexOf(x)]), title: x.title, text: x.text })),
   });
   // Paste the AI's answer back: fills the title, description, tags, thumbnail text and pinned comment.
@@ -1735,8 +1716,8 @@ DELIVERY: voiceover
     { ok: vTitle.length > 0 && vTitle.length <= 100, t: "Title is 1 to 100 characters" },
     { ok: vDesc.trim().length > 0 && vDesc.length <= 5000, t: "Description is written and under 5,000 characters" },
     { ok: vTags.trim().length > 0 && vTags.length <= 500, t: "Tags added, under 500 characters" },
-    { ok: fmt === "short" || chapters.length >= 3, t: "Chapters: 3 or more, each 10 seconds or longer" },
-    { ok: fmt === "short" || genericNames.length === 0, t: "Scene names work as chapter titles (none like “Hook” or “Scene 3”)" },
+    { ok: fmt === "short" || !withChapters || chapters.length >= 3, t: withChapters ? "Chapters: 3 or more, each 10 seconds or longer" : "Chapters are off (they can give the story away)" },
+    { ok: fmt === "short" || !withChapters || genericNames.length === 0, t: "Scene names work as chapter titles (none like “Hook” or “Scene 3”)" },
     ...(vSources.trim() && !SRC_NONE.test(vSources) ? [{ ok: srcChecked && hasSources(vDesc), t: "Sources checked by you and added to the description" }] : []),
     { ok: !!voiceUrl || !!musicUrl, t: "Audio track attached" },
     { ok: caps, t: "Captions burned into the video" },
@@ -1780,6 +1761,7 @@ DELIVERY: voiceover
             {tab === "create" && (<>
               <Section title="Script" defaultOpen>
                 <Field l="Video topic or title"><input className={inp} value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="e.g. 5 habits for productivity" /></Field>
+                <Field l="Channel name (used in the sign-off of the script prompt)"><input className={inp} value={channel} onChange={(e) => setChannel(e.target.value)} placeholder="e.g. Dark History Focus" /></Field>
 
                 <Section title="Get a script from Claude, ChatGPT or any AI" note={scriptText.trim() ? "optional" : ""} defaultOpen={!scriptText.trim()}>
                   <div className="grid grid-cols-2 gap-3">
@@ -2012,6 +1994,7 @@ DELIVERY: voiceover
               <Section title="Write everything with any AI" note={vDesc.trim() ? "✓ done" : ""} defaultOpen={!vDesc.trim()}>
                 <p className="text-xs text-slate-400">The app prepares one prompt from your script and scene times. Paste it into ChatGPT, Claude, Gemini or any AI, and it writes your title, description, tags, thumbnail text and pinned comment.</p>
                 <Field l="Notes for the AI (optional): channel name, links, language, call to action"><textarea className={inp} rows={2} value={aiNotes} onChange={(e) => setAiNotes(e.target.value)} placeholder="e.g. Channel: Bee Tales. Mention my newsletter." /></Field>
+                {fmt === "long" && <label className="flex items-start gap-2 text-xs text-slate-300"><input type="checkbox" className="mt-0.5 accent-violet-500" checked={withChapters} onChange={(e) => setWithChapters(e.target.checked)} /><span>Add chapters to the description. Off by default, because chapter titles tell people what happens in the video.</span></label>}
                 {noScript && <p className="rounded-md border border-amber-500/40 p-2 text-xs text-amber-300">There is no script in the app yet, so the AI would have nothing to write about. In the Create tab, paste your script and tap “Load script into scenes only” (or Generate video), then come back here.</p>}
                 <button className={`${btn(true)} w-full`} disabled={noScript} onClick={() => void copyText(promptText, "Prompt")}>Copy prompt for AI</button>
                 <details className="text-xs text-slate-400">
