@@ -8,6 +8,8 @@ import type { Move } from "./motion.ts";
 import { drawCaption } from "./captions.ts";
 import { drawTitle } from "./title.ts";
 import { drawEndCard } from "./endCard.ts";
+import { EMBER_LEVELS, drawEmbers, isEmberLevel } from "./embers.ts";
+import type { EmberLevel } from "./embers.ts";
 import { CARD_SECONDS, PROMO_MAX, PROMO_MIN, fitPassage, parsePromoReply, passageOf, promoBeats, promoRequest, promoState } from "./promo.ts";
 import { chapterList, publishPrompt, parseAnswer, srtFile } from "./publish.ts";
 import { scriptPrompt } from "./scriptPrompt.ts";
@@ -28,7 +30,7 @@ type Mark = { at: number; len: number; text: string }; // one narrated sentence:
 type Scene = Draft & { id: string; duration: number; palette: number; clips: Clip[]; marks?: Mark[] };
 type Meta = { title?: string; description?: string; tags?: string[]; thumb?: string; intro?: string };
 type Parsed = { meta: Meta; scenes: Draft[] };
-type Live = { scenes: Scene[]; starts: number[]; total: number; fit: Fit; caps: boolean; W: number; H: number; intro: string; voiceVol: number; musicVol: number; duck: boolean; lead: number; tail: number; outro: string; introColor: string; accent: string; fps: number; from: number; card: number };
+type Live = { scenes: Scene[]; starts: number[]; total: number; fit: Fit; caps: boolean; W: number; H: number; intro: string; voiceVol: number; musicVol: number; duck: boolean; lead: number; tail: number; outro: string; introColor: string; accent: string; fps: number; from: number; card: number; embers: EmberLevel };
 // from: where the recording starts (0 for a whole video). card: when the Promo Short end screen begins (0 = none).
 
 const PALETTES = [["#1b1442", "#6d3df0"], ["#0b1f33", "#13a8c9"], ["#0f2a22", "#2fb67c"], ["#3a1212", "#e8643a"], ["#1d1d3a", "#d6458f"]];
@@ -504,7 +506,7 @@ const borrowVisuals = (list: Scene[]): Scene[] =>
 const SAVE_KEY = "vortex-project";
 type Saved = {
   v: 1; fmt: Fmt; res: number; fps: number; wpm: number; topic: string; tone: string; minutes: number; minSec: number;
-  scriptText: string; intro: string; source: Source; moving: boolean; caps: boolean; fit?: Fit; musicStyle?: MusicStyle; autoMusic?: boolean; balance?: boolean; leadSec?: number; outro?: string; introColor?: string; accent?: string; aiNotes?: string; channel?: string; withChapters?: boolean; styleId?: StyleId; customStyle?: string; thumbTopic?: string; thumbScene?: string; thumbSetting?: string; vSources?: string; srcChecked?: boolean;
+  scriptText: string; intro: string; source: Source; moving: boolean; caps: boolean; embers?: EmberLevel; fit?: Fit; musicStyle?: MusicStyle; autoMusic?: boolean; balance?: boolean; leadSec?: number; outro?: string; introColor?: string; accent?: string; aiNotes?: string; channel?: string; withChapters?: boolean; styleId?: StyleId; customStyle?: string; thumbTopic?: string; thumbScene?: string; thumbSetting?: string; vSources?: string; srcChecked?: boolean;
   vTitle: string; vDesc: string; vTags: string; thumbText: string;
   scenes: Omit<Scene, "clips" | "marks">[];
 };
@@ -733,6 +735,9 @@ function drawFrame(ctx: CanvasRenderingContext2D, L: Live, i: number, tt: number
     ctx.globalAlpha = 1;
   } else drawScene(ctx, w, h, sc, local, tt, getMedia, i, L.scenes.length);
 
+  // Drifting embers over the picture for the whole video; the title, captions and end screen are drawn on top of them.
+  if (L.embers !== "off" && !(L.card > 0 && tt >= L.card)) drawEmbers(ctx, w, h, tt - L.from, L.embers);
+
   ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillStyle = "#fff";
 
   // Title: heavy capitals with a thick outline, centred, mixed colours (same look as the thumbnail).
@@ -810,6 +815,7 @@ export default function App() {
   const [playing, setPlaying] = useState(false);
   const [t, setT] = useState(0);
   const [caps, setCaps] = useState(saved?.caps ?? true);
+  const [embers, setEmbers] = useState<EmberLevel>(isEmberLevel(saved?.embers) ? saved.embers : "subtle"); // drifting fire embers over the whole video
   const [fit, setFit] = useState<Fit>(saved?.fit ?? "blur");
   const [adding, setAdding] = useState(false);
   const [showCode, setShowCode] = useState(false);
@@ -837,7 +843,7 @@ export default function App() {
   const [cfVoice, setCfVoice] = useState("orion");
   const [musicUrl, setMusicUrl] = useState("");
   const [musicVol, setMusicVol] = useState(0.15);
-  const [musicStyle, setMusicStyle] = useState<MusicStyle>(saved?.musicStyle ?? "calm");
+  const [musicStyle, setMusicStyle] = useState<MusicStyle>(saved?.musicStyle ?? "epic");
   const [autoMusic, setAutoMusic] = useState(saved?.autoMusic ?? true); // Generate video adds a music track by itself
   const [leadSec, setLeadSec] = useState(saved?.leadSec ?? 4); // seconds of music alone before the voice and captions start
   const [outro, setOutro] = useState(saved?.outro ?? ""); // typed ending message, shown over the last seconds
@@ -921,8 +927,8 @@ export default function App() {
   const liveScenes = useMemo(() => (endExtra ? scenes.map((x, k) => (k === scenes.length - 1 ? { ...x, duration: x.duration + endExtra } : x)) : scenes), [scenes, endExtra]);
   // While a Promo Short is recorded, the same scenes play from the start of the chosen passage, then the end screen follows.
   const liveOf = (): Live => promoWin
-    ? { scenes: liveScenes, starts, total: promoWin.b + CARD_SECONDS, fit: fmt === "long" ? "blur" : fit, caps, W: cw, H: ch, intro: "", voiceVol: voiceGain, musicVol: musicGain, duck: balance, lead: 0, tail: CARD_SECONDS, outro: "", introColor, accent, fps, from: promoWin.a, card: promoWin.b }
-    : { scenes: liveScenes, starts, total: total + endExtra, fit, caps, W: cw, H: ch, intro, voiceVol: voiceGain, musicVol: musicGain, duck: balance, lead: leadUsed, tail: endExtra, outro, introColor, accent, fps, from: 0, card: 0 };
+    ? { scenes: liveScenes, starts, total: promoWin.b + CARD_SECONDS, fit: fmt === "long" ? "blur" : fit, caps, W: cw, H: ch, intro: "", voiceVol: voiceGain, musicVol: musicGain, duck: balance, lead: 0, tail: CARD_SECONDS, outro: "", introColor, accent, fps, from: promoWin.a, card: promoWin.b, embers }
+    : { scenes: liveScenes, starts, total: total + endExtra, fit, caps, W: cw, H: ch, intro, voiceVol: voiceGain, musicVol: musicGain, duck: balance, lead: leadUsed, tail: endExtra, outro, introColor, accent, fps, from: 0, card: 0, embers };
   const live = useRef<Live>(liveOf());
   // Kept up to date after every render (the timer and the exporter read it between renders).
   useLayoutEffect(() => { live.current = liveOf(); });
@@ -999,14 +1005,14 @@ export default function App() {
     const id = window.setTimeout(() => {
       try {
         const data: Saved = {
-          v: 1, fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, aiNotes, channel, withChapters, styleId, customStyle, thumbTopic, thumbScene, thumbSetting, vSources, srcChecked, vTitle, vDesc, vTags, thumbText,
+          v: 1, fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, embers, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, aiNotes, channel, withChapters, styleId, customStyle, thumbTopic, thumbScene, thumbSetting, vSources, srcChecked, vTitle, vDesc, vTags, thumbText,
           scenes: scenes.map((s) => ({ id: s.id, title: s.title, text: s.text, onScreen: s.onScreen, visual: s.visual, duration: s.duration, palette: s.palette })),
         };
         localStorage.setItem(SAVE_KEY, JSON.stringify(data));
       } catch { /* storage full or blocked: skip */ }
     }, 800);
     return () => clearTimeout(id);
-  }, [fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, aiNotes, channel, withChapters, styleId, customStyle, thumbTopic, thumbScene, thumbSetting, vSources, srcChecked, vTitle, vDesc, vTags, thumbText, scenes]);
+  }, [fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, embers, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, aiNotes, channel, withChapters, styleId, customStyle, thumbTopic, thumbScene, thumbSetting, vSources, srcChecked, vTitle, vDesc, vTags, thumbText, scenes]);
   useEffect(() => {
     if (!code) return undefined;
     const ctl = new AbortController();
@@ -2105,6 +2111,7 @@ export default function App() {
               <button className={btn()} onClick={() => { pause(); seek(0); }}>Restart</button>
               <span className="w-24 text-xs sm:text-sm tabular-nums text-slate-300">{clock(Math.min(t, fullTotal))} / {clock(fullTotal)}</span>
               <label className="ml-auto flex items-center gap-1.5 text-xs text-slate-400"><input type="checkbox" checked={caps} onChange={(e) => setCaps(e.target.checked)} />Captions</label>
+              <label className="flex items-center gap-1.5 text-xs text-slate-400">Embers<select className="rounded-md border border-slate-700 bg-slate-900 px-1 text-xs" value={embers} onChange={(e) => setEmbers(e.target.value as EmberLevel)}>{EMBER_LEVELS.map((l) => <option key={l.id} value={l.id}>{l.label}</option>)}</select></label>
               {fmt === "short" && <label className="flex items-center gap-1.5 text-xs text-slate-400"><input type="checkbox" checked={safe} onChange={(e) => setSafe(e.target.checked)} />Safe zone</label>}
             </div>
             <div className="relative cursor-pointer" onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); seek(((e.clientX - r.left) / r.width) * fullTotal); }}>
