@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { KeyboardEvent as ReactKeyEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { MUSIC_STYLES } from "./music.ts";
 import { makeMusicOffThread } from "./musicAsync.ts";
 import type { MusicStyle } from "./music.ts";
@@ -8,7 +8,7 @@ import type { Move } from "./motion.ts";
 import { drawCaption } from "./captions.ts";
 import { drawTitle } from "./title.ts";
 import { drawEndCard } from "./endCard.ts";
-import { EMBER_LEVELS, drawEmbers, isEmberLevel } from "./embers.ts";
+import { drawEmbers, isEmberLevel } from "./embers.ts";
 import type { EmberLevel } from "./embers.ts";
 import { CARD_SECONDS, PROMO_MAX, PROMO_MIN, fitPassage, parsePromoReply, passageOf, promoBeats, promoRequest, promoState } from "./promo.ts";
 import { chapterList, publishPrompt, parseAnswer, srtFile } from "./publish.ts";
@@ -22,6 +22,12 @@ import { parseThumbFill, thumbFillPrompt, thumbPrompt, thumbReady } from "./thum
 type Fmt = "long" | "short";
 type Fit = "blur" | "fill" | "plain"; // what to do with a picture whose shape does not match the video
 type Tab = "create" | "scenes" | "audio" | "camera" | "publish";
+const TAB_IDS: Tab[] = ["create", "scenes", "audio", "camera", "publish"];
+// Which tab the address asks for (#scenes, #audio...). Anything else opens Create.
+const tabFromHash = (): Tab => {
+  const h = typeof location === "undefined" ? "" : location.hash.slice(1);
+  return TAB_IDS.find((k) => k === h) ?? "create";
+};
 type Media = HTMLImageElement | HTMLVideoElement;
 type Clip = { url: string; kind: "image" | "video"; src?: "upload" | "ai" | "pexels" | "pixabay" }; // src = where the visual came from (no src = recorded on camera)
 // onCam = a person speaks on camera in this scene (their own voice, real lip movement). Otherwise it is narration only.
@@ -800,7 +806,7 @@ export default function App() {
   const [res, setRes] = useState(saved?.res ?? (typeof window !== "undefined" && window.innerWidth < 768 ? 720 : 1080)); // phones start at 720p: much lighter to render
   const [fps, setFps] = useState(saved?.fps ?? 30);
   const [wpm, setWpm] = useState(saved?.wpm ?? 150);
-  const [tab, setTab] = useState<Tab>("create");
+  const [tab, setTab] = useState<Tab>(tabFromHash); // the tab is kept in the address (#scenes, #audio...), so Back, refresh and links work
   const [topic, setTopic] = useState(saved?.topic ?? "");
   const [tone, setTone] = useState(saved?.tone ?? "Friendly");
   const [minutes, setMinutes] = useState(saved?.minutes ?? 3);
@@ -1732,35 +1738,87 @@ export default function App() {
   const tabs: [Tab, string][] = [["create", "Create"], ["scenes", "Scenes"], ["audio", "Audio"], ["camera", "Camera"], ["publish", "Publish"]];
   const switchFmt = (f: Fmt) => { setFmt(f); setMinutes(f === "short" ? 1 : 3); setMinSec(f === "short" ? 0 : 120); };
 
+  // Navigation: each tab gets its own history entry, so the browser's Back button and a phone's Back gesture move between
+  // tabs instead of leaving the studio. Opening the page with #audio (a bookmark or a shared link) opens that tab.
+  useEffect(() => {
+    if (tabFromHash() !== tab) { try { history.pushState(null, "", `#${tab}`); } catch { /* address cannot be changed here */ } }
+  }, [tab]);
+  useEffect(() => {
+    const onPop = () => setTab(tabFromHash());
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  // While a video is being built or recorded, closing or refreshing the page would lose it (pictures, clips and audio are not saved).
+  useEffect(() => {
+    if (!busy && !exporting) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [busy, exporting]);
+
+  // Space plays and pauses, as in any video editor, unless you are typing or a control has the focus.
+  const toggleRef = useRef<() => void>(() => {});
+  useEffect(() => { toggleRef.current = () => { if (busy || exporting) return; (playing ? pause : play)(); }; });
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== "Space" || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+      const el = e.target as HTMLElement | null;
+      if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT|BUTTON|A|SUMMARY)$/.test(el.tagName) || el.getAttribute("role") === "slider")) return;
+      e.preventDefault();
+      toggleRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // The timeline: tap or drag to move through the video (a finger can scrub), and use the arrow keys when it has the focus.
+  const lastScrub = useRef(0);
+  const scrub = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const now = performance.now();
+    if (e.type === "pointermove" && now - lastScrub.current < 50) return; // a drag is sampled about 20 times a second, so a phone keeps up
+    lastScrub.current = now;
+    const r = e.currentTarget.getBoundingClientRect();
+    seek(Math.max(0, Math.min(1, (e.clientX - r.left) / Math.max(1, r.width))) * fullTotal);
+  };
+  const scrubKey = (e: ReactKeyEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget) return;
+    const step = e.shiftKey ? 15 : 5;
+    const to = e.key === "ArrowLeft" ? t - step : e.key === "ArrowRight" ? t + step : e.key === "Home" ? 0 : e.key === "End" ? fullTotal : null;
+    if (to === null) return;
+    e.preventDefault();
+    seek(to);
+  };
+
   return (
     <div className="vtx-app flex min-h-0 flex-1 flex-col overflow-hidden" style={{ fontFamily: FONT }}>
       <header className="flex flex-wrap items-center gap-2 sm:gap-3 border-b border-slate-800 bg-slate-950 px-3 sm:px-4 py-2.5">
         <div className="text-base sm:text-lg font-extrabold tracking-tight">Vortex <span className="text-violet-400">AI Studio</span></div>
-        <div className="ml-2 flex rounded-md bg-slate-900 p-0.5 text-xs sm:text-sm">
+        <div role="group" aria-label="Video format" className="ml-2 flex rounded-md bg-slate-900 p-0.5 text-xs sm:text-sm">
           {(["long", "short"] as Fmt[]).map((f) => (
-            <button key={f} onClick={() => switchFmt(f)} className={`rounded px-2.5 sm:px-3 py-1 ${fmt === f ? "bg-violet-600" : "text-slate-400"}`}>
+            <button key={f} aria-pressed={fmt === f} onClick={() => switchFmt(f)} className={`rounded px-2.5 sm:px-3 py-1 ${fmt === f ? "bg-violet-600" : "text-slate-400"}`}>
               {f === "long" ? "Video 16:9" : "Short 9:16"}
             </button>
           ))}
         </div>
-        <select className={`${inp} !w-auto text-xs sm:text-sm`} value={res} onChange={(e) => setRes(+e.target.value)}>
+        <select aria-label="Resolution" className={`${inp} !w-auto text-xs sm:text-sm`} value={res} onChange={(e) => setRes(+e.target.value)}>
           <option value={720}>720p</option><option value={1080}>1080p</option><option value={1440}>1440p</option>
         </select>
-        <select className={`${inp} !w-auto text-xs sm:text-sm hidden sm:block`} value={fps} onChange={(e) => setFps(+e.target.value)}>
+        <select aria-label="Frame rate" className={`${inp} !w-auto text-xs sm:text-sm hidden sm:block`} value={fps} onChange={(e) => setFps(+e.target.value)}>
           <option value={30}>30 fps</option><option value={60}>60 fps</option>
         </select>
         <span className="text-xs sm:text-sm text-slate-400 hidden md:inline">{W}×{H} · {clock(fullTotal)}</span>
         <div className="ml-auto flex items-center gap-2 sm:gap-3">
-          {msg && <span className="basis-full text-xs text-amber-300 sm:basis-auto sm:max-w-xs sm:truncate sm:text-slate-400" title={msg}>{msg}</span>}
+          {msg && <span role="status" className="basis-full text-xs text-amber-300 sm:basis-auto sm:max-w-xs sm:truncate sm:text-slate-400" title={msg}>{msg}</span>}
           <button onClick={() => void exportVideo()} disabled={exporting || busy} className={`${btn()} text-xs sm:text-sm`}>{exporting ? (t >= fullTotal - 0.5 ? "Finishing…" : `Rendering ${Math.min(99, Math.floor((t / (fullTotal || 1)) * 100))}%`) : "Re-render"}</button>
         </div>
       </header>
 
       <div className="vtx-body flex min-h-0 flex-1 flex-col lg:flex-row">
         <aside className="vtx-side flex w-full lg:w-[400px] shrink-0 flex-col border-r border-b lg:border-b-0 border-slate-800 bg-slate-950 max-h-[45dvh] lg:max-h-none overflow-y-auto">
-          <nav className="flex border-b border-slate-800 overflow-x-auto">
+          <nav aria-label="Studio sections" className="flex border-b border-slate-800 overflow-x-auto">
             {tabs.map(([k, l]) => (
-              <button key={k} onClick={() => { setTab(k); sideScroll.current?.scrollTo({ top: 0 }); }} className={`flex-1 min-w-[70px] py-2.5 text-xs sm:text-sm whitespace-nowrap ${tab === k ? "border-b-2 border-violet-500 text-white" : "text-slate-400 hover:text-slate-200"}`}>{l}</button>
+              <button key={k} aria-current={tab === k ? "page" : undefined} onClick={() => { setTab(k); sideScroll.current?.scrollTo({ top: 0 }); }} className={`flex-1 min-w-[70px] py-2.5 text-xs sm:text-sm whitespace-nowrap ${tab === k ? "border-b-2 border-violet-500 text-white" : "text-slate-400 hover:text-slate-200"}`}>{l}</button>
             ))}
           </nav>
           <div ref={sideScroll} className="vtx-side-inner min-h-0 flex-1 space-y-4 overflow-y-auto p-3 sm:p-4">
@@ -1816,6 +1874,14 @@ export default function App() {
                   </select>
                 </Field>
                 <p className="text-xs text-slate-500">This affects things like upright phone photos in a wide video. Pictures close to the video's shape always fill the frame. For upright photos, the vertical (Shorts) format fills the screen with no bars.</p>
+                <Field l="Fire embers over the whole video">
+                  <select className={inp} value={embers} onChange={(e) => setEmbers(e.target.value as EmberLevel)}>
+                    <option value="off">Off</option>
+                    <option value="subtle">Subtle (a few faint sparks)</option>
+                    <option value="strong">Strong (more, brighter sparks)</option>
+                  </select>
+                </Field>
+                <p className="text-xs text-slate-500">Small glowing sparks drift over the picture from the first second to the last, and stay faint over the captions. They are drawn by the app, so they are also in the exported file.</p>
               </Section>
 
               <Section title="Generate" defaultOpen>
@@ -2052,7 +2118,7 @@ export default function App() {
 
               <Section title="Thumbnail" note={thumbText.trim() ? "✓ done" : ""} defaultOpen>
                 <Field l="Thumbnail text"><input className={inp} value={thumbText} onChange={(e) => setThumbText(e.target.value)} placeholder="3–5 words" /></Field>
-                <canvas ref={thumbRef} width={1280} height={720} className="w-full rounded-md" />
+                <canvas ref={thumbRef} role="img" aria-label="Thumbnail preview" width={1280} height={720} className="w-full rounded-md" />
                 <button className={`${btn()} w-full`} onClick={grabFrame}>Use current preview frame</button>
                 <button className={`${btn(true)} w-full`} onClick={() => void downloadThumb()}>Download thumbnail</button>
               </Section>
@@ -2101,7 +2167,7 @@ export default function App() {
         <main className="vtx-main flex min-w-0 flex-1 flex-col bg-black/40">
           <div className="vtx-stage flex min-h-0 flex-1 items-center justify-center p-2 sm:p-4">
             <div className={`relative ${fmt === "short" ? "vtx-short" : ""}`} style={fmt === "long" ? { width: "min(100%, 880px)", aspectRatio: `${W}/${H}` } : { aspectRatio: `${W}/${H}` }}>
-              <canvas ref={canvasRef} width={cw} height={ch} className="h-full w-full rounded-md shadow-2xl object-contain" />
+              <canvas ref={canvasRef} role="img" aria-label="Video preview" width={cw} height={ch} className="h-full w-full rounded-md shadow-2xl object-contain" />
               {safe && fmt === "short" && <div className="pointer-events-none absolute inset-x-0 top-0 bottom-0 rounded-md border border-dashed border-amber-400/50" style={{ margin: "6% 14% 22% 5%" }} />}
             </div>
           </div>
@@ -2111,10 +2177,10 @@ export default function App() {
               <button className={btn()} onClick={() => { pause(); seek(0); }}>Restart</button>
               <span className="w-24 text-xs sm:text-sm tabular-nums text-slate-300">{clock(Math.min(t, fullTotal))} / {clock(fullTotal)}</span>
               <label className="ml-auto flex items-center gap-1.5 text-xs text-slate-400"><input type="checkbox" checked={caps} onChange={(e) => setCaps(e.target.checked)} />Captions</label>
-              <label className="flex items-center gap-1.5 text-xs text-slate-400">Embers<select className="rounded-md border border-slate-700 bg-slate-900 px-1 text-xs" value={embers} onChange={(e) => setEmbers(e.target.value as EmberLevel)}>{EMBER_LEVELS.map((l) => <option key={l.id} value={l.id}>{l.label}</option>)}</select></label>
               {fmt === "short" && <label className="flex items-center gap-1.5 text-xs text-slate-400"><input type="checkbox" checked={safe} onChange={(e) => setSafe(e.target.checked)} />Safe zone</label>}
             </div>
-            <div className="relative cursor-pointer" onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); seek(((e.clientX - r.left) / r.width) * fullTotal); }}>
+            <div className="relative cursor-pointer" role="slider" tabIndex={0} aria-label="Video position" aria-valuemin={0} aria-valuemax={Math.round(fullTotal)} aria-valuenow={Math.round(Math.min(t, fullTotal))} aria-valuetext={`${clock(Math.min(t, fullTotal))} of ${clock(fullTotal)}`}
+              style={{ touchAction: "pan-y" }} onPointerDown={scrub} onPointerMove={(e) => { if (e.buttons === 1) scrub(e); }} onKeyDown={scrubKey}>
               <div className="flex h-10 sm:h-12 gap-0.5 overflow-hidden rounded">
                 {scenes.map((s, k) => (
                   <div key={s.id} onClick={() => setSelId(s.id)} title={s.title} style={{ flex: s.duration + (k === scenes.length - 1 ? endExtra : 0), background: `linear-gradient(135deg,${PALETTES[s.palette][0]},${PALETTES[s.palette][1]})` }} className={`truncate px-2 py-1 text-xs ${s.id === sel?.id ? "ring-2 ring-inset ring-white" : ""}`}>{s.title}</div>

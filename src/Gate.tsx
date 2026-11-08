@@ -81,8 +81,10 @@ export default function Gate({ children }: { children: ReactNode }) {
   if (phase === "open") return <>{children}</>;
 
   const shell = (inner: ReactNode) => (
-    <div className="flex min-h-screen items-center justify-center bg-slate-950 p-4 text-slate-100">
-      <div className="w-full max-w-sm space-y-4 rounded-lg border border-slate-800 bg-slate-900 p-5">
+    // The card is centred with auto margins inside a scrollable area, so on a short screen (a phone held sideways, or with the
+    // keyboard open) the page scrolls and the Unlock button stays reachable, instead of being cut off.
+    <div className="flex bg-slate-950 p-4 text-slate-100" style={{ flex: "1 1 auto", minHeight: 0, overflowY: "auto" }}>
+      <div className="w-full max-w-sm space-y-4 rounded-lg border border-slate-800 bg-slate-900 p-5" style={{ margin: "auto" }}>
         <h1 className="text-lg font-bold">Vortex <span className="text-violet-400">AI Studio</span></h1>
         {inner}
       </div>

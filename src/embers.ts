@@ -8,11 +8,6 @@
 //  - They fade in gently over the first second and are left out over the end screen.
 
 export type EmberLevel = "off" | "subtle" | "strong";
-export const EMBER_LEVELS: { id: EmberLevel; label: string }[] = [
-  { id: "off", label: "Off" },
-  { id: "subtle", label: "Subtle" },
-  { id: "strong", label: "Strong" },
-];
 export const isEmberLevel = (v: unknown): v is EmberLevel => v === "off" || v === "subtle" || v === "strong";
 
 const COUNT = 56; // embers alive at once at full strength (kept small so a phone can draw them 30 times a second)

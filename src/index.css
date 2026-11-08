@@ -8,27 +8,15 @@
 }
 
 :root {
-  --text: #6b6375;
-  --text-h: #08060d;
-  --bg: #fff;
-  --border: #e5e4e7;
-  --code-bg: #f4f3ec;
-  --accent: #aa3bff;
-  --accent-bg: rgba(170, 59, 255, 0.1);
-  --accent-border: rgba(170, 59, 255, 0.5);
-  --social-bg: rgba(244, 243, 236, 0.5);
-  --shadow:
-    rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
-
   --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --mono: ui-monospace, Consolas, monospace;
 
   font: 18px/145% var(--sans);
   letter-spacing: 0.18px;
-  color-scheme: light dark;
-  color: var(--text);
-  background: var(--bg);
+  /* The studio is always dark, so the browser's own parts (scrollbars, drop-down lists, checkboxes) must be dark too,
+     even on a device that is set to light mode. */
+  color-scheme: dark;
+  color: #f1f5f9;
+  background: #020617;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -36,26 +24,6 @@
 
   @media (max-width: 1024px) {
     font-size: 16px;
-  }
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --text: #9ca3af;
-    --text-h: #f3f4f6;
-    --bg: #16171d;
-    --border: #2e303a;
-    --code-bg: #1f2028;
-    --accent: #c084fc;
-    --accent-bg: rgba(192, 132, 252, 0.15);
-    --accent-border: rgba(192, 132, 252, 0.5);
-    --social-bg: rgba(47, 48, 58, 0.5);
-    --shadow:
-      rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
-  }
-
-  #social .button-icon {
-    filter: invert(1) brightness(2);
   }
 }
 
@@ -77,6 +45,19 @@ body {
 /* Vertical (9:16) preview: its height used to be set inline. */
 .vtx-short {
   height: min(100%, 560px);
+}
+
+/* Desktop and tablet-sized windows: fit the wide (16:9) preview to the space it really has, in both directions.
+   A fixed 880 px width made it taller than a short window (it ran over the Play button and timeline) and left a
+   big blank area on large screens. The stage is measured as a container, so the picture is as large as fits.
+   (The upright 9:16 preview already fits through .vtx-short.) */
+@media (min-width: 1024px), (orientation: landscape) and (min-height: 521px) {
+  .vtx-stage {
+    container-type: size;
+  }
+  .vtx-stage > div:not(.vtx-short) {
+    width: min(100cqw, 177.78cqh, 1280px) !important;
+  }
 }
 
 /* Phones and small tablets held upright: let the whole page scroll down instead of squeezing the
@@ -103,6 +84,32 @@ body {
   }
   .vtx-short {
     height: min(60dvh, 560px);
+  }
+  /* The preview comes first, as in phone video editors. Before, it sat below the whole form, so on a phone the picture
+     and the Play button were one to three screens down and could not be seen while editing. */
+  .vtx-main {
+    order: -1;
+  }
+}
+
+/* On a phone or tablet tall enough to spare the room, the preview, Play button and timeline stay pinned at the top
+   while the form scrolls underneath, so you can edit and watch the result without scrolling back and forth. */
+@media (max-width: 1023px) and (orientation: portrait) and (min-height: 700px) {
+  .vtx-main {
+    position: sticky;
+    top: env(safe-area-inset-top, 0px);
+    z-index: 20;
+    background: #020617;
+    border-bottom: 1px solid #1e293b;
+  }
+  .vtx-stage {
+    padding: 0.375rem !important;
+  }
+  .vtx-stage > div:not(.vtx-short) {
+    width: min(100%, 52dvh) !important;
+  }
+  .vtx-short {
+    height: min(30dvh, 300px);
   }
 }
 
@@ -199,46 +206,58 @@ html {
   }
 }
 
-h1,
-h2 {
-  font-family: var(--heading);
-  font-weight: 500;
-  color: var(--text-h);
-}
-
-h1 {
-  font-size: 56px;
-  letter-spacing: -1.68px;
-  margin: 32px 0;
-  @media (max-width: 1024px) {
-    font-size: 36px;
-    margin: 20px 0;
-  }
-}
-h2 {
-  font-size: 24px;
-  line-height: 118%;
-  letter-spacing: -0.24px;
-  margin: 0 0 8px;
-  @media (max-width: 1024px) {
-    font-size: 20px;
-  }
-}
 p {
   margin: 0;
 }
 
-code,
-.counter {
-  font-family: var(--mono);
-  display: inline-flex;
-  border-radius: 4px;
-  color: var(--text-h);
+/* Keyboard focus: a clear ring on everything you can tab to. Mouse and touch taps do not show it. */
+.vtx-app :focus-visible,
+button:focus-visible,
+a:focus-visible,
+summary:focus-visible {
+  outline: 2px solid #a78bfa;
+  outline-offset: 2px;
 }
 
-code {
-  font-size: 15px;
-  line-height: 135%;
-  padding: 4px 8px;
-  background: var(--code-bg);
+/* Phones held sideways (short and wide): put the controls and the preview side by side, as on a desktop,
+   instead of stacking them. Stacked, the controls took almost the whole height and the preview, Play button
+   and timeline were cut off with no way to reach them. */
+@media (max-width: 1023px) and (orientation: landscape) and (max-height: 520px) {
+  .vtx-body {
+    flex-direction: row !important;
+  }
+  .vtx-side {
+    width: 44% !important;
+    max-width: 380px;
+    max-height: none !important;
+    border-bottom-width: 0 !important;
+  }
+  .vtx-main {
+    overflow-y: auto;
+  }
+  .vtx-stage {
+    padding: 0.25rem !important;
+    min-height: 120px !important;
+  }
+  /* Fit the preview to the height that is left (its width follows from its shape), so it never runs over the controls below it. */
+  .vtx-stage > div {
+    width: auto !important;
+    max-width: 100%;
+    height: 100%;
+  }
+  .vtx-app > header {
+    padding-top: max(0.25rem, env(safe-area-inset-top));
+    padding-bottom: 0.25rem;
+  }
+}
+
+/* Respect "reduce motion" on devices that ask for it. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
 }
