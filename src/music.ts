@@ -2,8 +2,9 @@
 // nothing to download, no licence to worry about and no server call. Each track is a short loop that joins
 // up seamlessly (notes that ring past the end wrap round to the start), because the app loops the music.
 
-export type MusicStyle = "calm" | "cinematic" | "upbeat" | "lofi";
+export type MusicStyle = "calm" | "cinematic" | "upbeat" | "lofi" | "epic";
 export const MUSIC_STYLES: { id: MusicStyle; label: string; note: string }[] = [
+  { id: "epic", label: "Epic and dramatic", note: "strings, choir-like pads, brass swells, timpani, rolling arpeggio" },
   { id: "calm", label: "Calm and gentle", note: "soft pads and a slow, light melody" },
   { id: "cinematic", label: "Cinematic and deep", note: "low drone, slow swells, soft pulse" },
   { id: "upbeat", label: "Upbeat and bright", note: "steady beat, plucky melody" },
@@ -17,6 +18,8 @@ const PLANS: Record<MusicStyle, Plan> = {
   cinematic: { bpm: 64, seconds: 45, chords: [[45, 52, 57, 60, 64], [41, 48, 53, 57, 60], [48, 55, 60, 64], [43, 50, 55, 59]] },
   upbeat: { bpm: 112, seconds: 51, chords: [[48, 52, 55, 60], [43, 50, 55, 59], [45, 52, 57, 60], [41, 48, 53, 57]] },
   lofi: { bpm: 80, seconds: 48, chords: [[50, 53, 57, 60], [43, 53, 59, 62], [48, 52, 55, 59], [45, 52, 55, 60]] },
+  // D minor, i - VI - III - VII (Dm, Bb, F, C): the classic heroic loop. Root first; the bass plays an octave below it.
+  epic: { bpm: 76, seconds: 50, chords: [[50, 57, 62, 65], [46, 53, 58, 62], [53, 57, 60, 65], [48, 55, 60, 64]] },
 };
 
 const hz = (m: number) => 440 * Math.pow(2, (m - 69) / 12);
@@ -73,6 +76,29 @@ export function makeMusic(style: MusicStyle, sr = 22050): Float32Array {
     }
   };
 
+  // A timpani hit: a low sine that starts a little sharp and settles, with a short soft thump on the front.
+  const timp = (t0: number, f: number, amp: number) => {
+    const a = Math.round(t0 * sr), len = Math.round(1.4 * sr);
+    let ph = 0;
+    for (let i = 0; i < len; i++) {
+      const t = i / sr;
+      ph += (2 * Math.PI * f * (1 + 0.45 * Math.exp(-t * 26))) / sr;
+      const thump = t < 0.04 ? (rand() * 2 - 1) * (1 - t / 0.04) * 0.25 : 0;
+      out[wrap(a + i)] += (Math.sin(ph) + 0.35 * Math.sin(ph * 1.5) * Math.exp(-t * 9) + thump) * Math.exp(-t * 4.2) * amp;
+    }
+  };
+  // A rising noise swell (like a cymbal roll): it grows towards the end and drops away at the hit.
+  const swell = (t0: number, secs: number, amp: number) => {
+    const a = Math.round(t0 * sr), len = Math.round(secs * sr);
+    let last = 0;
+    for (let i = 0; i < len; i++) {
+      const r = rand() * 2 - 1, s = r - last;
+      last = r;
+      const p = i / len;
+      out[wrap(a + i)] += s * p * p * amp;
+    }
+  };
+
   for (let rep = 0; rep < reps; rep++) {
     plan.chords.forEach((ch, ci) => {
       const t0 = (rep * plan.chords.length + ci) * bar;
@@ -81,6 +107,21 @@ export function makeMusic(style: MusicStyle, sr = 22050): Float32Array {
         ch.forEach((m) => note(t0, bar - 0.4, hz(m), 0.1, { attack: 1.2, release: 1.6, harm: [1, 0.25], detune: 0.003 }));
         note(t0, bar - 0.3, hz(root - 12), 0.14, { attack: 0.3, release: 1 });
         for (let s = 0; s < 8; s++) pluck(t0 + s * beat * 0.5, hz(ch[[1, 2, 3, 2, 1, 3, 2, 1][s] % ch.length] + 12), 0.06, 1.4);
+      } else if (style === "epic") {
+        const last = ci === plan.chords.length - 1;
+        // Strings and a higher choir-like pad hold the chord for the whole bar.
+        ch.forEach((m) => note(t0, bar - 0.1, hz(m), 0.075, { attack: 0.9, release: 1.4, harm: [1, 0.5, 0.33, 0.25, 0.2], detune: 0.005 }));
+        ch.slice(1).forEach((m) => note(t0, bar - 0.2, hz(m + 12), 0.04, { attack: 1.6, release: 1.6, harm: [1, 0.3], detune: 0.006 }));
+        note(t0, bar, hz(root - 12), 0.22, { attack: 0.5, release: 1.2, harm: [1, 0.4, 0.2] });
+        // Brass-like swell on every second chord.
+        if (ci % 2 === 0) note(t0 + beat * 2, beat * 2 - 0.1, hz(root), 0.055, { attack: 0.55, release: 0.9, harm: [1, 0.8, 0.6, 0.5, 0.4, 0.3], detune: 0.002 });
+        // Timpani: a strong hit on the first beat, a lighter one on the third, and a pickup before the next chord.
+        timp(t0, hz(root - 12), 0.5);
+        timp(t0 + beat * 2, hz(root - 12), 0.34);
+        timp(t0 + beat * 3.5, hz(root - 12), last ? 0.4 : 0.22);
+        // Rolling arpeggio in eighth notes.
+        for (let s = 0; s < 8; s++) pluck(t0 + s * beat * 0.5, hz(ch[[0, 1, 2, 3, 2, 1, 2, 3][s]] + 12), 0.045, 0.7);
+        if (last) swell(t0 + bar - beat * 2, beat * 2, 0.07); // rises into the start of the loop
       } else if (style === "cinematic") {
         ch.forEach((m) => note(t0, bar - 0.2, hz(m), 0.085, { attack: 1.6, release: 1.8, harm: [1, 0.5, 0.33, 0.25], detune: 0.004 }));
         note(t0, bar, hz(root - 12), 0.2, { attack: 0.6, release: 1.4, harm: [1, 0.3] });
