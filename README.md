@@ -9,9 +9,10 @@ A browser-based video maker. Paste a script, and it splits it into scenes, finds
 - Voiceover: built-in AI voice (free Cloudflare Workers AI voice, or OpenAI if you prefer), your own recording, or an uploaded file. Background music: five built-in styles made on the device (epic, calm, cinematic, upbeat, lo-fi; simple synthesised loops, no licences involved) or your own upload.
 - Share: sends the finished video through the phone's share menu (nothing is uploaded by the app).
 - Burned-in captions, intro text, slow zoom and pan, crossfades, and a camera and microphone recorder.
-- Fire embers: small glowing sparks drift over the picture from the first second to the last (Off, Subtle or Strong, next to the Captions switch). They are drawn by the app itself, so there is no overlay video to find or license, they thin out over the caption area, and they are recorded into the exported file.
+- Fire embers: small glowing sparks drift over the picture from the first second to the last (Off, Subtle or Strong, in the Pictures section of the Create tab). They are drawn by the app itself, so there is no overlay video to find or license, they thin out over the caption area, and they are recorded into the exported file.
 - Publish tab: title, description, tags, thumbnail (with download), and a checklist.
 - Export: records the preview in your browser to a video file.
+- Phone and desktop: on a phone held upright the preview comes first and stays pinned while you scroll the controls; on a laptop the wide preview is sized to fit the window. Each tab has its own address (#scenes, #audio and so on), so Back, refresh and bookmarks work, Space plays and pauses, and the timeline answers to touch drag and arrow keys. Installable: Chrome and Android offer "Add to Home screen" (PNG icons and a manifest are included).
 - Your script, scenes and settings are saved in the browser. Pictures, clips and audio are not saved and are fetched again after a refresh.
 
 It does **not** generate AI video yet. See "Roadmap".
