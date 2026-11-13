@@ -526,6 +526,21 @@ function loadSaved(): Saved | null {
 }
 
 /* ---------- NARRATION ---------- */
+// Runs count jobs with at most n at a time. Results come back in order. The first failure stops new jobs and is passed on.
+async function pool<T>(n: number, count: number, run: (i: number) => Promise<T>): Promise<T[]> {
+  const out = new Array<T>(count);
+  let next = 0, stop = false, err: unknown = null, failed = false;
+  const worker = async () => {
+    while (!stop && next < count) {
+      const i = next++;
+      try { out[i] = await run(i); } catch (e) { if (!failed) { failed = true; err = e; } stop = true; }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(n, count)) }, worker));
+  if (failed) throw err;
+  return out;
+}
+const VOICE_AT_ONCE = 4; // sentences asked from the voice service at the same time
 async function speak(key: string, text: string, voice: string) {
   let last = "";
   for (let a = 0; a < 3; a++) {
@@ -1457,23 +1472,32 @@ export default function App() {
   const narrate = async (list: Scene[]) => {
     const ac = ensureAc(), sr = ac.sampleRate, GAP = Math.round(0.2 * sr);
     const parts: { data?: Float32Array; dur: number; marks?: Mark[] }[] = [];
+    // Every piece of text to be spoken, in reading order. They are asked for several at a time, then put back in order.
+    type Job = { text: string };
+    const jobs: Job[] = [];
+    const plan = list.map((s) => {
+      if (!s.text.trim() || (s.onCam && s.clips[0]?.kind === "video")) return null;
+      return sentencesOf(s.text).map((sent) => ({ sent, pieces: splitText(sent).map((text) => { jobs.push({ text }); return jobs.length - 1; }) }));
+    });
+    let spoken = 0;
+    const voice = server.voiceProvider === "cloudflare" ? cfVoice : oaVoice;
+    const pcm = await pool(VOICE_AT_ONCE, jobs.length, async (x) => {
+      const b = await speak(keys.voice, jobs[x].text, voice);
+      const d = (await ac.decodeAudioData(await b.arrayBuffer())).getChannelData(0).slice();
+      setMsg(`Recording narration: ${++spoken} of ${jobs.length} sentences done…`);
+      return d;
+    });
     for (let i = 0; i < list.length; i++) {
-      const s = list[i];
-      if (!s.text.trim() || (s.onCam && s.clips[0]?.kind === "video")) { parts.push({ dur: s.duration }); continue; }
-      const sents = sentencesOf(s.text);
+      const sents = plan[i];
+      if (!sents) { parts.push({ dur: list[i].duration }); continue; }
       const chunks: Float32Array[] = [], marks: Mark[] = [];
       let len = 0;
       for (let j = 0; j < sents.length; j++) {
-        setMsg(`Recording narration ${i + 1} of ${list.length} (sentence ${j + 1} of ${sents.length})…`);
-        const pcs: Float32Array[] = [];
-        for (const piece of splitText(sents[j])) {
-          const b = await speak(keys.voice, piece, server.voiceProvider === "cloudflare" ? cfVoice : oaVoice);
-          pcs.push((await ac.decodeAudioData(await b.arrayBuffer())).getChannelData(0).slice());
-        }
+        const pcs = sents[j].pieces.map((k) => pcm[k]);
         const n = pcs.reduce((a, c) => a + c.length, 0), d = new Float32Array(n);
         let o = 0;
         pcs.forEach((c) => { d.set(c, o); o += c.length; });
-        marks.push({ at: len / sr, len: n / sr, text: sents[j] });
+        marks.push({ at: len / sr, len: n / sr, text: sents[j].sent });
         chunks.push(d); len += n;
         if (j < sents.length - 1) { chunks.push(new Float32Array(GAP)); len += GAP; }
       }
@@ -1512,16 +1536,19 @@ export default function App() {
       let next = r.list, note = "";
       setStage(2);
       // Music and voiceover are both made here, in one go.
-      if (autoMusic && !musicUrl) {
-        setMsg("Making background music…");
+      // The music is made off the main thread while the voice is being recorded, so neither waits for the other.
+      const musicJob = autoMusic && !musicUrl ? (async () => {
         await new Promise((res) => setTimeout(res, 50));
-        try { const sr = 22050; setGeneratedMusic(await makeMusicOffThread(musicStyle, sr), sr); note += " Background music added."; }
-        catch { note += " Could not make background music on this device."; }
-      }
+        try { const sr = 22050; setGeneratedMusic(await makeMusicOffThread(musicStyle, sr), sr); return " Background music added."; }
+        catch { return " Could not make background music on this device."; }
+      })() : null;
+      if (musicJob && !keys.voice) setMsg("Making background music…");
       if (!keys.voice && !voiceUrl) note += " No voiceover was added because the server voice is not connected (enter the access code under Server access).";
       setLeadUsed(0);
-      if (keys.voice) next = await narrate(next);
-      else if (voiceDur) next = fitTo(next, voiceDur);
+      try {
+        if (keys.voice) next = await narrate(next);
+        else if (voiceDur) next = fitTo(next, voiceDur);
+      } finally { note += (await musicJob) ?? ""; }
       const len = next.reduce((a, s) => a + s.duration, 0);
       if (minSec && len < minSec) {
         setScenes(next); fillMeta(r.meta, next);
@@ -1529,19 +1556,20 @@ export default function App() {
         setStage(0); return;
       }
       setStage(3);
-      const withPics: Scene[] = [];
       aiSt.current = { fails: 0 };
-      let failure = "";
-      for (let i = 0; i < next.length; i++) {
+      let failure = "", got = 0;
+      const todo = next.filter((x) => !x.clips.some(mine)).length;
+      // Several scenes at a time (fewer for AI pictures, which are heavy), then put back in order.
+      const withPics: Scene[] = await pool(source === "stock" ? 4 : 2, next.length, async (i) => {
         const s = next[i];
-        if (s.clips.some(mine)) { withPics.push(s); continue; } // your own visuals stay; only scenes without them get generated ones
-        setMsg(source !== "stock" ? `Generating photoreal visuals for scene ${i + 1} of ${next.length} (can take a minute each)…` : `Finding multiple unique visuals for scene ${i + 1} of ${next.length}…`);
+        if (s.clips.some(mine)) return s; // your own visuals stay; only scenes without them get generated ones
         const n = shotsFor(source, s.duration, moving);
         try {
           const clips = await gatherClips({ keys, source, topic: topic.trim(), f: fmt, res, moving, st: aiSt.current, style: picStyle }, s, n);
-          withPics.push({ ...s, clips });
-        } catch (e) { failure = e instanceof Error ? e.message : ""; withPics.push(s); }
-      }
+          return { ...s, clips };
+        } catch (e) { failure = e instanceof Error ? e.message : ""; return s; }
+        finally { setMsg(source !== "stock" ? `Generating photoreal visuals: ${++got} of ${todo} scenes done (can take a minute each)…` : `Finding visuals: ${++got} of ${todo} scenes done…`); }
+      });
       const keptOwn = withPics.filter((x) => x.clips.some(mine)).length;
       if (keptOwn) note += ` Kept your own visuals in ${keptOwn} scene(s).`;
       if (failure) note += ` Some visuals failed: ${failure}`;
@@ -1827,7 +1855,7 @@ export default function App() {
             {tab === "create" && (<>
               <Section title="Script" defaultOpen>
                 <Field l="Video topic or title"><input className={inp} value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="e.g. 5 habits for productivity" /></Field>
-                <Field l="Channel name (used in the sign-off of the script prompt)"><input className={inp} value={channel} onChange={(e) => setChannel(e.target.value)} placeholder="e.g. Dark History Focus" /></Field>
+                <Field l="Channel name"><input className={inp} value={channel} onChange={(e) => setChannel(e.target.value)} placeholder="e.g. Dark History Focus" /></Field>
 
                 <Section title="Get a script from Claude, ChatGPT or any AI" note={scriptText.trim() ? "optional" : ""} defaultOpen={!scriptText.trim()}>
                   <div className="grid grid-cols-2 gap-3">
@@ -1862,7 +1890,7 @@ export default function App() {
                   </select>
                 </Field>
                 <textarea aria-label="Picture style wording" rows={5} className={`${inp} text-xs`} readOnly={styleId !== "custom"} value={styleId === "custom" ? customStyle : picStyle} onChange={(e) => setCustomStyle(e.target.value)} />
-                <p className="text-xs text-slate-500">Used by the app's AI pictures. It does not change stock video or photos you upload. In the Scenes tab, “Copy image prompt” builds the same style into a prompt for any image generator you prefer.</p>
+                <p className="text-xs text-slate-500">Used for the app's AI pictures. “Copy image prompt” in Scenes uses it too.</p>
                 {source !== "stock" && <p className="text-xs text-slate-500">{source === "mix" ? "Each scene gets AI photos plus real video clips (the video clips come from Pexels and Pixabay, which needs their keys on the server and your access code; without them every picture is AI)." : "Each scene gets AI photos that match your VISUAL lines. "}Allow about 1 to 2 minutes per scene before rendering starts.</p>}
                 <label className="flex items-start gap-2 rounded-md border border-slate-800 p-2 text-xs text-slate-400">
                   <input type="checkbox" className="mt-0.5" checked={moving} onChange={(e) => setMoving(e.target.checked)} />
@@ -1875,7 +1903,7 @@ export default function App() {
                     <option value="plain">Whole picture on a plain dark background</option>
                   </select>
                 </Field>
-                <p className="text-xs text-slate-500">This affects things like upright phone photos in a wide video. Pictures close to the video's shape always fill the frame. For upright photos, the vertical (Shorts) format fills the screen with no bars.</p>
+                <p className="text-xs text-slate-500">How pictures that don't match the video's shape are fitted.</p>
                 <Field l="Fire embers over the whole video">
                   <select className={inp} value={embers} onChange={(e) => setEmbers(e.target.value as EmberLevel)}>
                     <option value="off">Off</option>
@@ -1883,14 +1911,14 @@ export default function App() {
                     <option value="strong">Strong (more, brighter sparks)</option>
                   </select>
                 </Field>
-                <p className="text-xs text-slate-500">Small glowing sparks drift over the picture from the first second to the last, and stay faint over the captions. They are drawn by the app, so they are also in the exported file.</p>
+                <p className="text-xs text-slate-500">Faint drifting sparks over the picture. Included in the export.</p>
               </Section>
 
               <Section title="Generate" defaultOpen>
                 <button className={`${btn(true)} w-full !py-2.5`} disabled={busy || exporting} onClick={generateVideo}>{busy || exporting ? "Working…" : "Generate video"}</button>
                 <button className={`${btn()} w-full`} disabled={busy || exporting} onClick={loadOnly}>Load script into scenes only</button>
                 <button className={`${btn()} w-full`} disabled={busy || exporting} onClick={() => { if (window.confirm("Clear the saved project and start fresh?")) { try { localStorage.removeItem(SAVE_KEY); } catch { /* ignore */ } window.location.reload(); } }}>Start a new project</button>
-                <p className="text-xs text-slate-500">Your script, scenes and settings are saved in this browser. Pictures, clips and audio are not saved, so they are fetched again after a refresh.</p>
+                <p className="text-xs text-slate-500">Script and settings are saved in this browser. Pictures and audio are fetched again after a refresh.</p>
                 {stage > 0 && (
                   <ul className="space-y-1 text-sm">
                     {STEPS.map((s, i) => {
@@ -1906,7 +1934,7 @@ export default function App() {
                   <Field l="Access code"><input type={showCode ? "text" : "password"} autoComplete="off" autoCapitalize="none" spellCheck={false} className={inp} value={code} onChange={(e) => setCode(e.target.value.trim())} /></Field>
                   <label className="flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={showCode} onChange={(e) => setShowCode(e.target.checked)} />Show the code (to check for typos)</label>
                   <button className={`${btn()} w-full`} onClick={() => { try { localStorage.removeItem("vortex-access"); } catch { /* ignore */ } window.location.reload(); }}>Lock this device</button>
-                  <p className="text-xs text-slate-500">Locking forgets the access code on this browser, so the code is asked for again. Your script and settings stay saved here.</p>
+                  <p className="text-xs text-slate-500">Locking forgets the access code here. Your script stays saved.</p>
                   {serverMsg && <p className="text-xs text-slate-300">{serverMsg}{serverMsg === "Connected." && ` AI voiceover: ${server.voice ? `on (${server.voiceProvider === "cloudflare" ? "Cloudflare, free allowance" : "OpenAI"})` : "off"}. Pexels: ${server.pexels ? "on" : "off"}. Pixabay: ${server.pixabay ? "on" : "off"}.`}</p>}
                   <p className="text-xs text-slate-500">Provider keys live on the server and never reach this browser. Enter the access code you set there to unlock AI voiceover and Pexels or Pixabay stock footage. When Pexels or Pixabay visuals are used, a credit line is added to the description automatically. You can also upload your own clips per scene in the Scenes tab.</p>
                 </div>
@@ -1920,7 +1948,7 @@ export default function App() {
                 <label className="flex items-center gap-1.5">Text colour <input type="color" value={introColor} onChange={(e) => setIntroColor(e.target.value)} className="h-7 w-9 rounded border border-slate-700 bg-transparent" /></label>
                 <label className="flex items-center gap-1.5">Accent colour <input type="color" value={accent} onChange={(e) => setAccent(e.target.value)} className="h-7 w-9 rounded border border-slate-700 bg-transparent" /></label>
               </div>
-              <p className="text-xs text-slate-500">Keep titles short (2 to 4 words). They are shown in capitals. Put stars around words to colour them: THE *BEE*. With no stars, the last word gets the accent colour.</p>
+              <p className="text-xs text-slate-500">Short titles (2 to 4 words). Put stars around words to colour them: THE *BEE*.</p>
               <div className="space-y-1.5">
                 {scenes.map((s, i) => (
                   <div key={s.id} onClick={() => { setSelId(s.id); seek(starts[i]); }} className={`flex cursor-pointer items-center gap-2 rounded-md border px-2.5 py-2 text-sm ${s.id === sel?.id ? "border-violet-500 bg-slate-900" : "border-slate-800 hover:bg-slate-900"}`}>
@@ -1941,9 +1969,9 @@ export default function App() {
                 <div className="flex gap-2">{PALETTES.map((p, i) => <button key={i} onClick={() => patch({ palette: i })} className={`h-7 w-7 rounded-full border-2 ${sel.palette === i ? "border-white" : "border-transparent"}`} style={{ background: `linear-gradient(135deg,${p[0]},${p[1]})` }} />)}</div>
                 <Field l="Visual search keywords"><input className={inp} value={sel.visual} onChange={(e) => patch({ visual: e.target.value })} /></Field>
                 <button className={btn()} disabled={busy} onClick={findPhoto}>Find and add more visuals</button>
-                <p className="text-xs text-slate-500">New visuals are added to the end of the list. Nothing you uploaded is replaced.</p>
+                <p className="text-xs text-slate-500">Added to the end of the list.</p>
                 <button className={btn()} onClick={() => void copyScenePrompt()}>Copy image prompt for this scene</button>
-                <p className="text-xs text-slate-500">For making this scene's picture in another image generator, in the picture style chosen in the Create tab. Add the picture afterwards with “Add your own images and videos”.</p>
+                <p className="text-xs text-slate-500">For another image generator, in your chosen style. Add the result with “Add your own images and videos”.</p>
                 <div className="space-y-1.5">
                   <p className="text-xs text-slate-400">{sel.clips.length ? `${sel.clips.length} visual${sel.clips.length === 1 ? "" : "s"} in this scene, shown in this order:` : "No visuals in this scene yet."}{sel.onCam ? " (Camera scene: only the first one is used.)" : ""}</p>
                   {sel.clips.map((c, k) => (
@@ -1987,7 +2015,7 @@ export default function App() {
               <Field l="Music-only start (seconds before the voice and captions begin)"><select className={inp} value={leadSec} onChange={(e) => setLeadSec(+e.target.value)}>{[0, 2, 3, 4, 5, 6, 8].map((n) => <option key={n} value={n}>{n === 0 ? "None, voice starts at once" : `${n} seconds`}</option>)}</select></Field>
               <Field l="Built-in music style"><select className={inp} value={musicStyle} onChange={(e) => setMusicStyle(e.target.value as MusicStyle)}>{MUSIC_STYLES.map((m) => <option key={m.id} value={m.id}>{m.label} ({m.note})</option>)}</select></Field>
               <button className={btn(true)} disabled={makingMusic} onClick={() => void makeBgMusic()}>{makingMusic ? "Making music…" : "Make background music"}</button>
-              <p className="text-xs text-slate-500">Made on your device, so there is nothing to download and no licence to worry about. It is a short loop of simple synthesised instruments, so expect a plain backing track, not a studio recording. You can make another style to replace it.</p>
+              <p className="text-xs text-slate-500">Made on your device: a short, plain synthesised loop, no licence needed.</p>
               <Field l="Or upload your own music"><input type="file" accept="audio/*" className="text-xs" onChange={(e) => e.target.files?.[0] && setMusicUrl(URL.createObjectURL(e.target.files[0]))} /></Field>
               <label className="flex items-start gap-2 rounded-md border border-slate-800 p-2 text-xs text-slate-400">
                 <input type="checkbox" className="mt-0.5" checked={balance} onChange={(e) => setBalance(e.target.checked)} />
@@ -2013,7 +2041,7 @@ export default function App() {
 
             {tab === "publish" && (<>
               <Section title="Publish checklist" note={`${checks.filter((c) => c.ok).length} of ${checks.length} passed`}>
-                <p className="text-xs text-slate-400">Everything YouTube asks for, in the order you meet it. Copy each item into YouTube. {checks.filter((c) => c.ok).length} of {checks.length} checks passed.</p>
+                <p className="text-xs text-slate-400">Copy each item into YouTube.</p>
                 <ul className="space-y-1 text-xs">
                   {checks.map((c) => <li key={c.t} className={c.ok ? "text-emerald-400" : "text-slate-500"}>{c.ok ? "✓" : "○"} {c.t}</li>)}
                 </ul>
@@ -2035,42 +2063,9 @@ export default function App() {
                 </details>
               </Section>
 
-              <Section title="Promo Short (30 to 45 seconds)" note={promoFile ? "✓ ready" : promoPass ? "passage picked" : ""}>
-                <p className="text-xs text-slate-400">A tall teaser cut from this video, to promote it. An AI picks the most suspenseful passage. The app then records it with the same voice, pictures and captions, and ends on a “Watch the full story” screen.</p>
-                {!voiceUrl && <p className="rounded-md border border-amber-500/40 p-2 text-xs text-amber-300">Make the video with a voiceover first (Generate video). The Short is cut from it.</p>}
-                <button className={`${btn()} w-full`} disabled={!voiceUrl || !promoBeatList.length} onClick={() => void copyText(promoAsk, "Request")}>Copy request: ask an AI to pick the passage</button>
-                <Field l="Paste the AI's reply here"><textarea className={inp} rows={3} value={promoReply} onChange={(e) => setPromoReply(e.target.value)} placeholder={"START: 41\nEND: 52\nWHY: ..."} /></Field>
-                <button className={`${btn()} w-full`} disabled={!promoReply.trim() || !promoBeatList.length} onClick={readPromoReply}>Use this reply</button>
-                {promoPick && promoPass && <div className="space-y-2 rounded-md border border-slate-700 p-2">
-                  <p className="text-xs text-slate-300">Sentences {promoPass.start} to {promoPass.end} of {promoBeatList.length}: <b>{Math.round(promoPass.secs)} seconds</b> of story, plus {CARD_SECONDS} seconds for the end screen.</p>
-                  {promoPick.why && <p className="text-xs text-slate-400">Why: {promoPick.why}</p>}
-                  <p className="max-h-32 overflow-y-auto rounded bg-slate-900 p-2 text-xs text-slate-300">{promoPass.text}</p>
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
-                    <span>Start</span><button className={btn()} aria-label="Start one sentence earlier" onClick={() => nudgePromo("start", -1)}>−</button><button className={btn()} aria-label="Start one sentence later" onClick={() => nudgePromo("start", 1)}>+</button>
-                    <span className="ml-2">End</span><button className={btn()} aria-label="End one sentence earlier" onClick={() => nudgePromo("end", -1)}>−</button><button className={btn()} aria-label="End one sentence later" onClick={() => nudgePromo("end", 1)}>+</button>
-                  </div>
-                  {promoPick.note && <p className="text-xs text-slate-500">{promoPick.note}</p>}
-                  {promoSt === "long" && <p className="text-xs text-amber-300">Too long: a Short with its end screen must stay under 45 seconds. Move the start later or the end earlier.</p>}
-                  {promoSt === "short" && <p className="text-xs text-amber-300">Shorter than {PROMO_MIN} seconds. It will work, but a little more story makes a stronger teaser.</p>}
-                  {promoSt === "tiny" && <p className="text-xs text-amber-300">Too short to make a Short. Add more sentences.</p>}
-                  {promoPass.secs > PROMO_MAX && promoSt !== "long" && <p className="text-xs text-slate-500">Just over {PROMO_MAX} seconds, still within the limit.</p>}
-                  {captionsEstimated && <p className="text-xs text-slate-500">The voiceover was not recorded by the app, so sentence timing is estimated and the cut may land a little off. Check the result.</p>}
-                </div>}
-                <button className={`${btn(true)} w-full`} disabled={!promoReady || exporting || busy} onClick={makePromo}>{exporting && promoWin ? "Recording the Short…" : "Make the Short"}</button>
-                <p className="text-xs text-slate-500">Recording takes as long as the Short itself. Keep this tab in front until it finishes.</p>
-                {promoFile && <div className="space-y-2">
-                  <video src={promoFile.url} controls playsInline className="mx-auto max-h-96 rounded-md" />
-                  <a href={promoFile.url} download={promoFile.name} className={`${btn(true)} block w-full text-center`}>Download Short ({promoFile.mb.toFixed(1)} MB)</a>
-                  <button className={`${btn()} w-full`} onClick={() => void shareVideo(promoFile)}>Share Short</button>
-                </div>}
-                <details className="text-xs text-slate-400">
-                  <summary className="cursor-pointer">Link the Short to the full video on YouTube</summary>
-                  <p className="mt-2 text-slate-500">The “Watch the full story” arrows point at the link YouTube shows under a Short. After you upload the Short, open YouTube Studio, go to Content, open the Short, and choose your full video under Related video (menu names may differ a little). The link cannot be added from this app, and without it the arrows lead nowhere.</p>
-                </details>
-              </Section>
 
               <Section title="Write everything with any AI" note={vDesc.trim() ? "✓ done" : ""} defaultOpen={!vDesc.trim()}>
-                <p className="text-xs text-slate-400">The app prepares one prompt from your script and scene times. Paste it into ChatGPT, Claude, Gemini or any AI, and it writes your title, description, tags, thumbnail text and pinned comment.</p>
+                <p className="text-xs text-slate-400">One prompt from your script. Paste it into any AI for title, description, tags, thumbnail text and pinned comment.</p>
                 <Field l="Notes for the AI (optional): channel name, links, language, call to action"><textarea className={inp} rows={2} value={aiNotes} onChange={(e) => setAiNotes(e.target.value)} placeholder="e.g. Channel: Bee Tales. Mention my newsletter." /></Field>
                 {fmt === "long" && <label className="flex items-start gap-2 text-xs text-slate-300"><input type="checkbox" className="mt-0.5 accent-violet-500" checked={withChapters} onChange={(e) => setWithChapters(e.target.checked)} /><span>Add chapters to the description. Off by default, because chapter titles tell people what happens in the video.</span></label>}
                 {noScript && <p className="rounded-md border border-amber-500/40 p-2 text-xs text-amber-300">There is no script in the app yet, so the AI would have nothing to write about. In the Create tab, paste your script and tap “Load script into scenes only” (or Generate video), then come back here.</p>}
@@ -2102,7 +2097,7 @@ export default function App() {
               </Section>
 
               <Section title="Sources (check before publishing)" note={!vSources.trim() ? "" : hasSources(vDesc) ? "✓ in description" : srcChecked ? "✓ checked" : "to check"}>
-                <p className="text-xs text-slate-400">The AI browses for sources and lists them here. It can still be wrong, so open every link and check that it supports what the video says. Delete any you cannot confirm. Nothing goes into the description until you tick the box.</p>
+                <p className="text-xs text-slate-400">Open every link and check it supports the video. Delete any you cannot confirm. Nothing is added until you tick the box.</p>
                 {SRC_NONE.test(vSources) && <p className="rounded-md border border-amber-500/40 p-2 text-xs text-amber-300">The AI said it could not browse the web. Add your own sources below, or ask an AI that can search the web.</p>}
                 <Field l="Sources, one per line"><textarea className={inp} rows={6} value={vSources} onChange={(e) => setVSources(e.target.value)} placeholder="- Page title (publisher): https://example.org/page - what it covers" /></Field>
                 {urlsIn(vSources).length > 0 && (
@@ -2129,8 +2124,51 @@ export default function App() {
                 <button className={`${btn(true)} w-full`} onClick={() => void downloadThumb()}>Download thumbnail</button>
               </Section>
 
+
+
+              <Section title="Pinned comment">
+                <Field l="Post this as the first comment, then pin it"><textarea className={inp} rows={3} value={pinnedText} onChange={(e) => setPinned(e.target.value)} /></Field>
+                <button className={`${btn()} w-full`} onClick={() => void copyText(pinnedText, "Comment")}>Copy comment</button>
+              </Section>
+
+
+              <Section title="More tools" note="promo, captions, thumbnail prompt, settings">
+              <Section title="Promo Short (30 to 45 seconds)" note={promoFile ? "✓ ready" : promoPass ? "passage picked" : ""}>
+                <p className="text-xs text-slate-400">A tall teaser cut from this video, ending on a “Watch the full story” screen.</p>
+                {!voiceUrl && <p className="rounded-md border border-amber-500/40 p-2 text-xs text-amber-300">Make the video with a voiceover first (Generate video). The Short is cut from it.</p>}
+                <button className={`${btn()} w-full`} disabled={!voiceUrl || !promoBeatList.length} onClick={() => void copyText(promoAsk, "Request")}>Copy request: ask an AI to pick the passage</button>
+                <Field l="Paste the AI's reply here"><textarea className={inp} rows={3} value={promoReply} onChange={(e) => setPromoReply(e.target.value)} placeholder={"START: 41\nEND: 52\nWHY: ..."} /></Field>
+                <button className={`${btn()} w-full`} disabled={!promoReply.trim() || !promoBeatList.length} onClick={readPromoReply}>Use this reply</button>
+                {promoPick && promoPass && <div className="space-y-2 rounded-md border border-slate-700 p-2">
+                  <p className="text-xs text-slate-300">Sentences {promoPass.start} to {promoPass.end} of {promoBeatList.length}: <b>{Math.round(promoPass.secs)} seconds</b> of story, plus {CARD_SECONDS} seconds for the end screen.</p>
+                  {promoPick.why && <p className="text-xs text-slate-400">Why: {promoPick.why}</p>}
+                  <p className="max-h-32 overflow-y-auto rounded bg-slate-900 p-2 text-xs text-slate-300">{promoPass.text}</p>
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+                    <span>Start</span><button className={btn()} aria-label="Start one sentence earlier" onClick={() => nudgePromo("start", -1)}>−</button><button className={btn()} aria-label="Start one sentence later" onClick={() => nudgePromo("start", 1)}>+</button>
+                    <span className="ml-2">End</span><button className={btn()} aria-label="End one sentence earlier" onClick={() => nudgePromo("end", -1)}>−</button><button className={btn()} aria-label="End one sentence later" onClick={() => nudgePromo("end", 1)}>+</button>
+                  </div>
+                  {promoPick.note && <p className="text-xs text-slate-500">{promoPick.note}</p>}
+                  {promoSt === "long" && <p className="text-xs text-amber-300">Too long: a Short with its end screen must stay under 45 seconds. Move the start later or the end earlier.</p>}
+                  {promoSt === "short" && <p className="text-xs text-amber-300">Shorter than {PROMO_MIN} seconds. It will work, but a little more story makes a stronger teaser.</p>}
+                  {promoSt === "tiny" && <p className="text-xs text-amber-300">Too short to make a Short. Add more sentences.</p>}
+                  {promoPass.secs > PROMO_MAX && promoSt !== "long" && <p className="text-xs text-slate-500">Just over {PROMO_MAX} seconds, still within the limit.</p>}
+                  {captionsEstimated && <p className="text-xs text-slate-500">The voiceover was not recorded by the app, so sentence timing is estimated and the cut may land a little off. Check the result.</p>}
+                </div>}
+                <button className={`${btn(true)} w-full`} disabled={!promoReady || exporting || busy} onClick={makePromo}>{exporting && promoWin ? "Recording the Short…" : "Make the Short"}</button>
+                <p className="text-xs text-slate-500">Keep this tab open while it records.</p>
+                {promoFile && <div className="space-y-2">
+                  <video src={promoFile.url} controls playsInline className="mx-auto max-h-96 rounded-md" />
+                  <a href={promoFile.url} download={promoFile.name} className={`${btn(true)} block w-full text-center`}>Download Short ({promoFile.mb.toFixed(1)} MB)</a>
+                  <button className={`${btn()} w-full`} onClick={() => void shareVideo(promoFile)}>Share Short</button>
+                </div>}
+                <details className="text-xs text-slate-400">
+                  <summary className="cursor-pointer">Link the Short to the full video on YouTube</summary>
+                  <p className="mt-2 text-slate-500">The “Watch the full story” arrows point at the link YouTube shows under a Short. After you upload the Short, open YouTube Studio, go to Content, open the Short, and choose your full video under Related video (menu names may differ a little). The link cannot be added from this app, and without it the arrows lead nowhere.</p>
+                </details>
+              </Section>
+
               <Section title="Thumbnail picture prompt (optional)" note={thumbScene.trim() && thumbSetting.trim() ? "✓ ready" : ""}>
-                <p className="text-xs text-slate-500">Optional. Fill the details yourself, or let an AI draft them from your script. The thumbnail text above is used as the headline.</p>
+                <p className="text-xs text-slate-500">Optional. The thumbnail text above is the headline.</p>
                 <button className={`${btn()} w-full`} disabled={!scriptForThumb.trim()} onClick={() => void copyText(thumbFillPrompt({ topic: thumbFields.topic, script: scriptForThumb }), "Request")}>Copy request: ask an AI to fill the details</button>
                 <Field l="Paste the AI's reply here"><textarea className={inp} rows={3} value={thumbReply} onChange={(e) => setThumbReply(e.target.value)} /></Field>
                 <button className={`${btn()} w-full`} disabled={!thumbReply.trim()} onClick={fillThumbFields}>Fill in the details from the reply</button>
@@ -2138,17 +2176,12 @@ export default function App() {
                 <Field l="Characters and scene"><textarea className={inp} rows={4} value={thumbScene} onChange={(e) => setThumbScene(e.target.value)} placeholder="Who is in the picture, how they look, and what they are doing" /></Field>
                 <Field l="Period or setting"><input className={inp} value={thumbSetting} onChange={(e) => setThumbSetting(e.target.value)} placeholder="e.g. Strasbourg, July 1518, a cobbled town square" /></Field>
                 <button className={`${btn(true)} w-full`} disabled={!thumbReady(thumbFields)} onClick={() => void copyText(thumbPrompt(thumbFields), "Thumbnail prompt")}>Copy thumbnail prompt</button>
-                <p className="text-xs text-slate-500">Paste it into your image generator and attach your reference thumbnail so the look stays the same. Then check the spelling of the headline.</p>
+                <p className="text-xs text-slate-500">Paste into your image generator, attach a reference thumbnail, then check the headline spelling.</p>
               </Section>
 
               <Section title="Captions file (subtitles)">
                 <button className={`${btn(true)} w-full`} disabled={!scenes.some((x) => x.text.trim())} onClick={downloadCaptions}>Download captions file (.srt)</button>
                 <p className="text-xs text-slate-500">{captionsEstimated ? "Timing is estimated, because the voiceover was not recorded by the app. " : "Timing matches your recorded voiceover. "}In YouTube Studio, open Subtitles, then Add language, then Upload file. The captions already in the picture stay as they are; this file lets viewers turn captions on and off.</p>
-              </Section>
-
-              <Section title="Pinned comment">
-                <Field l="Post this as the first comment, then pin it"><textarea className={inp} rows={3} value={pinnedText} onChange={(e) => setPinned(e.target.value)} /></Field>
-                <button className={`${btn()} w-full`} onClick={() => void copyText(pinnedText, "Comment")}>Copy comment</button>
               </Section>
 
               <Section title="Settings in YouTube (tick each when done)">
@@ -2165,6 +2198,7 @@ export default function App() {
                     <span>{t}</span>
                   </label>
                 ))}
+              </Section>
               </Section>
             </>)}
           </div>
