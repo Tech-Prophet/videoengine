@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { MUSIC_STYLES } from "./music.ts";
 import { makeMusicOffThread } from "./musicAsync.ts";
@@ -13,6 +13,7 @@ import type { EmberLevel } from "./embers.ts";
 import { CARD_SECONDS, PROMO_MAX, PROMO_MIN, fitPassage, parsePromoReply, passageOf, promoBeats, promoRequest, promoState } from "./promo.ts";
 import { chapterList, publishPrompt, parseAnswer, srtFile } from "./publish.ts";
 import { scriptPrompt } from "./scriptPrompt.ts";
+import { YouTubePanel } from "./YouTubePanel.tsx";
 import { duckFactor, levels, rmsActive, rmsAll } from "./mix.ts";
 import { COMIC_STYLE, STYLE_NAMES, isStyleId, scenePrompt, styleText } from "./visualStyle.ts";
 import type { StyleId } from "./visualStyle.ts";
@@ -1291,6 +1292,7 @@ export default function App() {
     frameRef.current = c; setThumbBump(0); setThumbClip("frame");
     setMsg("Thumbnail picture set from preview frame.");
   };
+  const getThumb = useCallback(async () => { const c = thumbRef.current; return c ? thumbBlob(c) : null; }, []);
   const downloadThumb = async () => {
     const c = thumbRef.current;
     const bl = c ? await thumbBlob(c) : null;
@@ -2015,6 +2017,10 @@ export default function App() {
                 <ul className="space-y-1 text-xs">
                   {checks.map((c) => <li key={c.t} className={c.ok ? "text-emerald-400" : "text-slate-500"}>{c.ok ? "✓" : "○"} {c.t}</li>)}
                 </ul>
+              </Section>
+
+              <Section title="Share to YouTube" note={file ? "ready" : "render first"}>
+                <YouTubePanel file={file} title={vTitle} setTitle={setVTitle} desc={vDesc} setDesc={setVDesc} tags={vTags} setTags={setVTags} getThumb={getThumb} />
               </Section>
 
               <Section title="Video file" note={file ? "✓ ready" : "render first"} defaultOpen>
