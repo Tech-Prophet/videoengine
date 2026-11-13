@@ -1855,7 +1855,7 @@ export default function App() {
             {tab === "create" && (<>
               <Section title="Script" defaultOpen>
                 <Field l="Video topic or title"><input className={inp} value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="e.g. 5 habits for productivity" /></Field>
-                <Field l="Channel name (used in the sign-off of the script prompt)"><input className={inp} value={channel} onChange={(e) => setChannel(e.target.value)} placeholder="e.g. Dark History Focus" /></Field>
+                <Field l="Channel name"><input className={inp} value={channel} onChange={(e) => setChannel(e.target.value)} placeholder="e.g. Dark History Focus" /></Field>
 
                 <Section title="Get a script from Claude, ChatGPT or any AI" note={scriptText.trim() ? "optional" : ""} defaultOpen={!scriptText.trim()}>
                   <div className="grid grid-cols-2 gap-3">
@@ -2041,7 +2041,7 @@ export default function App() {
 
             {tab === "publish" && (<>
               <Section title="Publish checklist" note={`${checks.filter((c) => c.ok).length} of ${checks.length} passed`}>
-                <p className="text-xs text-slate-400">Copy each item into YouTube. {checks.filter((c) => c.ok).length} of {checks.length} checks passed.</p>
+                <p className="text-xs text-slate-400">Copy each item into YouTube.</p>
                 <ul className="space-y-1 text-xs">
                   {checks.map((c) => <li key={c.t} className={c.ok ? "text-emerald-400" : "text-slate-500"}>{c.ok ? "✓" : "○"} {c.t}</li>)}
                 </ul>
@@ -2063,39 +2063,6 @@ export default function App() {
                 </details>
               </Section>
 
-              <Section title="Promo Short (30 to 45 seconds)" note={promoFile ? "✓ ready" : promoPass ? "passage picked" : ""}>
-                <p className="text-xs text-slate-400">A tall teaser cut from this video, ending on a “Watch the full story” screen.</p>
-                {!voiceUrl && <p className="rounded-md border border-amber-500/40 p-2 text-xs text-amber-300">Make the video with a voiceover first (Generate video). The Short is cut from it.</p>}
-                <button className={`${btn()} w-full`} disabled={!voiceUrl || !promoBeatList.length} onClick={() => void copyText(promoAsk, "Request")}>Copy request: ask an AI to pick the passage</button>
-                <Field l="Paste the AI's reply here"><textarea className={inp} rows={3} value={promoReply} onChange={(e) => setPromoReply(e.target.value)} placeholder={"START: 41\nEND: 52\nWHY: ..."} /></Field>
-                <button className={`${btn()} w-full`} disabled={!promoReply.trim() || !promoBeatList.length} onClick={readPromoReply}>Use this reply</button>
-                {promoPick && promoPass && <div className="space-y-2 rounded-md border border-slate-700 p-2">
-                  <p className="text-xs text-slate-300">Sentences {promoPass.start} to {promoPass.end} of {promoBeatList.length}: <b>{Math.round(promoPass.secs)} seconds</b> of story, plus {CARD_SECONDS} seconds for the end screen.</p>
-                  {promoPick.why && <p className="text-xs text-slate-400">Why: {promoPick.why}</p>}
-                  <p className="max-h-32 overflow-y-auto rounded bg-slate-900 p-2 text-xs text-slate-300">{promoPass.text}</p>
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
-                    <span>Start</span><button className={btn()} aria-label="Start one sentence earlier" onClick={() => nudgePromo("start", -1)}>−</button><button className={btn()} aria-label="Start one sentence later" onClick={() => nudgePromo("start", 1)}>+</button>
-                    <span className="ml-2">End</span><button className={btn()} aria-label="End one sentence earlier" onClick={() => nudgePromo("end", -1)}>−</button><button className={btn()} aria-label="End one sentence later" onClick={() => nudgePromo("end", 1)}>+</button>
-                  </div>
-                  {promoPick.note && <p className="text-xs text-slate-500">{promoPick.note}</p>}
-                  {promoSt === "long" && <p className="text-xs text-amber-300">Too long: a Short with its end screen must stay under 45 seconds. Move the start later or the end earlier.</p>}
-                  {promoSt === "short" && <p className="text-xs text-amber-300">Shorter than {PROMO_MIN} seconds. It will work, but a little more story makes a stronger teaser.</p>}
-                  {promoSt === "tiny" && <p className="text-xs text-amber-300">Too short to make a Short. Add more sentences.</p>}
-                  {promoPass.secs > PROMO_MAX && promoSt !== "long" && <p className="text-xs text-slate-500">Just over {PROMO_MAX} seconds, still within the limit.</p>}
-                  {captionsEstimated && <p className="text-xs text-slate-500">The voiceover was not recorded by the app, so sentence timing is estimated and the cut may land a little off. Check the result.</p>}
-                </div>}
-                <button className={`${btn(true)} w-full`} disabled={!promoReady || exporting || busy} onClick={makePromo}>{exporting && promoWin ? "Recording the Short…" : "Make the Short"}</button>
-                <p className="text-xs text-slate-500">Keep this tab open while it records.</p>
-                {promoFile && <div className="space-y-2">
-                  <video src={promoFile.url} controls playsInline className="mx-auto max-h-96 rounded-md" />
-                  <a href={promoFile.url} download={promoFile.name} className={`${btn(true)} block w-full text-center`}>Download Short ({promoFile.mb.toFixed(1)} MB)</a>
-                  <button className={`${btn()} w-full`} onClick={() => void shareVideo(promoFile)}>Share Short</button>
-                </div>}
-                <details className="text-xs text-slate-400">
-                  <summary className="cursor-pointer">Link the Short to the full video on YouTube</summary>
-                  <p className="mt-2 text-slate-500">The “Watch the full story” arrows point at the link YouTube shows under a Short. After you upload the Short, open YouTube Studio, go to Content, open the Short, and choose your full video under Related video (menu names may differ a little). The link cannot be added from this app, and without it the arrows lead nowhere.</p>
-                </details>
-              </Section>
 
               <Section title="Write everything with any AI" note={vDesc.trim() ? "✓ done" : ""} defaultOpen={!vDesc.trim()}>
                 <p className="text-xs text-slate-400">One prompt from your script. Paste it into any AI for title, description, tags, thumbnail text and pinned comment.</p>
@@ -2157,6 +2124,49 @@ export default function App() {
                 <button className={`${btn(true)} w-full`} onClick={() => void downloadThumb()}>Download thumbnail</button>
               </Section>
 
+
+
+              <Section title="Pinned comment">
+                <Field l="Post this as the first comment, then pin it"><textarea className={inp} rows={3} value={pinnedText} onChange={(e) => setPinned(e.target.value)} /></Field>
+                <button className={`${btn()} w-full`} onClick={() => void copyText(pinnedText, "Comment")}>Copy comment</button>
+              </Section>
+
+
+              <Section title="More tools" note="promo, captions, thumbnail prompt, settings">
+              <Section title="Promo Short (30 to 45 seconds)" note={promoFile ? "✓ ready" : promoPass ? "passage picked" : ""}>
+                <p className="text-xs text-slate-400">A tall teaser cut from this video, ending on a “Watch the full story” screen.</p>
+                {!voiceUrl && <p className="rounded-md border border-amber-500/40 p-2 text-xs text-amber-300">Make the video with a voiceover first (Generate video). The Short is cut from it.</p>}
+                <button className={`${btn()} w-full`} disabled={!voiceUrl || !promoBeatList.length} onClick={() => void copyText(promoAsk, "Request")}>Copy request: ask an AI to pick the passage</button>
+                <Field l="Paste the AI's reply here"><textarea className={inp} rows={3} value={promoReply} onChange={(e) => setPromoReply(e.target.value)} placeholder={"START: 41\nEND: 52\nWHY: ..."} /></Field>
+                <button className={`${btn()} w-full`} disabled={!promoReply.trim() || !promoBeatList.length} onClick={readPromoReply}>Use this reply</button>
+                {promoPick && promoPass && <div className="space-y-2 rounded-md border border-slate-700 p-2">
+                  <p className="text-xs text-slate-300">Sentences {promoPass.start} to {promoPass.end} of {promoBeatList.length}: <b>{Math.round(promoPass.secs)} seconds</b> of story, plus {CARD_SECONDS} seconds for the end screen.</p>
+                  {promoPick.why && <p className="text-xs text-slate-400">Why: {promoPick.why}</p>}
+                  <p className="max-h-32 overflow-y-auto rounded bg-slate-900 p-2 text-xs text-slate-300">{promoPass.text}</p>
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+                    <span>Start</span><button className={btn()} aria-label="Start one sentence earlier" onClick={() => nudgePromo("start", -1)}>−</button><button className={btn()} aria-label="Start one sentence later" onClick={() => nudgePromo("start", 1)}>+</button>
+                    <span className="ml-2">End</span><button className={btn()} aria-label="End one sentence earlier" onClick={() => nudgePromo("end", -1)}>−</button><button className={btn()} aria-label="End one sentence later" onClick={() => nudgePromo("end", 1)}>+</button>
+                  </div>
+                  {promoPick.note && <p className="text-xs text-slate-500">{promoPick.note}</p>}
+                  {promoSt === "long" && <p className="text-xs text-amber-300">Too long: a Short with its end screen must stay under 45 seconds. Move the start later or the end earlier.</p>}
+                  {promoSt === "short" && <p className="text-xs text-amber-300">Shorter than {PROMO_MIN} seconds. It will work, but a little more story makes a stronger teaser.</p>}
+                  {promoSt === "tiny" && <p className="text-xs text-amber-300">Too short to make a Short. Add more sentences.</p>}
+                  {promoPass.secs > PROMO_MAX && promoSt !== "long" && <p className="text-xs text-slate-500">Just over {PROMO_MAX} seconds, still within the limit.</p>}
+                  {captionsEstimated && <p className="text-xs text-slate-500">The voiceover was not recorded by the app, so sentence timing is estimated and the cut may land a little off. Check the result.</p>}
+                </div>}
+                <button className={`${btn(true)} w-full`} disabled={!promoReady || exporting || busy} onClick={makePromo}>{exporting && promoWin ? "Recording the Short…" : "Make the Short"}</button>
+                <p className="text-xs text-slate-500">Keep this tab open while it records.</p>
+                {promoFile && <div className="space-y-2">
+                  <video src={promoFile.url} controls playsInline className="mx-auto max-h-96 rounded-md" />
+                  <a href={promoFile.url} download={promoFile.name} className={`${btn(true)} block w-full text-center`}>Download Short ({promoFile.mb.toFixed(1)} MB)</a>
+                  <button className={`${btn()} w-full`} onClick={() => void shareVideo(promoFile)}>Share Short</button>
+                </div>}
+                <details className="text-xs text-slate-400">
+                  <summary className="cursor-pointer">Link the Short to the full video on YouTube</summary>
+                  <p className="mt-2 text-slate-500">The “Watch the full story” arrows point at the link YouTube shows under a Short. After you upload the Short, open YouTube Studio, go to Content, open the Short, and choose your full video under Related video (menu names may differ a little). The link cannot be added from this app, and without it the arrows lead nowhere.</p>
+                </details>
+              </Section>
+
               <Section title="Thumbnail picture prompt (optional)" note={thumbScene.trim() && thumbSetting.trim() ? "✓ ready" : ""}>
                 <p className="text-xs text-slate-500">Optional. The thumbnail text above is the headline.</p>
                 <button className={`${btn()} w-full`} disabled={!scriptForThumb.trim()} onClick={() => void copyText(thumbFillPrompt({ topic: thumbFields.topic, script: scriptForThumb }), "Request")}>Copy request: ask an AI to fill the details</button>
@@ -2174,11 +2184,6 @@ export default function App() {
                 <p className="text-xs text-slate-500">{captionsEstimated ? "Timing is estimated, because the voiceover was not recorded by the app. " : "Timing matches your recorded voiceover. "}In YouTube Studio, open Subtitles, then Add language, then Upload file. The captions already in the picture stay as they are; this file lets viewers turn captions on and off.</p>
               </Section>
 
-              <Section title="Pinned comment">
-                <Field l="Post this as the first comment, then pin it"><textarea className={inp} rows={3} value={pinnedText} onChange={(e) => setPinned(e.target.value)} /></Field>
-                <button className={`${btn()} w-full`} onClick={() => void copyText(pinnedText, "Comment")}>Copy comment</button>
-              </Section>
-
               <Section title="Settings in YouTube (tick each when done)">
                 {([
                   ["kids", "Audience: choose whether the video is made for kids."],
@@ -2193,6 +2198,7 @@ export default function App() {
                     <span>{t}</span>
                   </label>
                 ))}
+              </Section>
               </Section>
             </>)}
           </div>
