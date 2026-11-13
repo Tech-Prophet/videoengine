@@ -88,6 +88,24 @@ Skipping this step leaves new class names unstyled. Plain CSS (spacing and phone
 
 The script prompt (Create tab) lives in `src/scriptPrompt.ts` and the publish prompt in `src/publish.ts`. The script prompt asks for a documentary-narrator voice, careful claims (no invented records, dates or names), fresh openers and closers every time, a spoiler-free description and a sign-off that names your channel (set the channel name in the Create tab). The publish prompt keeps titles, tags and the description free of spoilers, and the pinned comment repeats the question the video ends on. Chapters are left out of the publish prompt unless you switch on "Add chapters to the description" in the Publish tab, because chapter titles tell viewers what happens.
 
+## Share to YouTube
+
+The Publish tab has a "Share to YouTube" box that sends the finished video straight from your browser to your channel (publish now, schedule, private or unlisted), with the title, description, tags, category, made-for-kids answer and thumbnail. You sign in with Google's own pop-up and the app keeps no secret: only your public Client ID is needed, and the sign-in token lives in memory for about an hour. The upload history is kept in this browser. A page that is closed during an upload cannot finish it, because the video file only exists in the open page.
+
+One-time setup (about ten minutes, in a browser):
+1. Open Google Cloud Console, create a project, and switch on **YouTube Data API v3** (APIs & Services, Library).
+2. Set up the **OAuth consent screen** (External). Add yourself under **Test users**. Add the scopes `.../auth/youtube.upload` and `.../auth/youtube.readonly`.
+3. Create credentials, **OAuth client ID**, type **Web application**. Under **Authorized JavaScript origins** add your app's address (for example `https://videoengine.yourname.workers.dev`, and `http://localhost:5173` for local use). No redirect URI is needed.
+4. Copy the Client ID (it ends in `.apps.googleusercontent.com`) and paste it into the Share to YouTube box.
+5. Do a first test upload as **private** and check the video in YouTube Studio.
+
+Good to know:
+- Until your Google project passes Google's review, only the test users you listed can sign in, and Google may show an "unverified app" warning. Press Advanced, then continue.
+- Google has said that videos uploaded from some unreviewed projects are locked to private. Google's current page says they are not, other sources say they are. The private test upload in step 5 tells you which applies to you. If it is locked, you can still publish by switching the video to public in YouTube Studio, or apply for Google's audit.
+- Custom thumbnails need a YouTube channel with a verified phone number.
+- Google's upload and quota limits apply. If YouTube says the limit is used up, try again the next day.
+- A pinned comment and a Short's related-video link cannot be set through the upload, so do those in YouTube Studio.
+
 ## Promo Short
 
 The Publish tab has a Promo Short section. It makes a tall 30 to 45 second teaser from a finished video, to promote it. The app cannot watch the video, so it builds a request listing every spoken sentence with its length; you paste that into any AI, which names the most suspenseful passage (START and END sentence numbers). You can nudge the start and end by one sentence, and the passage is always whole sentences, so the voice is not cut mid-word. The app then records that passage with the same voice, pictures and captions, in the tall format, and finishes on a "WATCH THE FULL STORY" screen with two arrows that point down. Story time is 28 to 41 seconds, plus 3.5 seconds for the end screen. Like any export it records in real time, so the tab must stay in front. Pictures made for a wide video are shown over a blurred copy of themselves. The related-video link is added in YouTube Studio after upload; the app cannot do that.
