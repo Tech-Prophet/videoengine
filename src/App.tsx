@@ -526,6 +526,21 @@ function loadSaved(): Saved | null {
 }
 
 /* ---------- NARRATION ---------- */
+// Runs count jobs with at most n at a time. Results come back in order. The first failure stops new jobs and is passed on.
+async function pool<T>(n: number, count: number, run: (i: number) => Promise<T>): Promise<T[]> {
+  const out = new Array<T>(count);
+  let next = 0, stop = false, err: unknown = null, failed = false;
+  const worker = async () => {
+    while (!stop && next < count) {
+      const i = next++;
+      try { out[i] = await run(i); } catch (e) { if (!failed) { failed = true; err = e; } stop = true; }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(n, count)) }, worker));
+  if (failed) throw err;
+  return out;
+}
+const VOICE_AT_ONCE = 4; // sentences asked from the voice service at the same time
 async function speak(key: string, text: string, voice: string) {
   let last = "";
   for (let a = 0; a < 3; a++) {
@@ -1457,23 +1472,32 @@ export default function App() {
   const narrate = async (list: Scene[]) => {
     const ac = ensureAc(), sr = ac.sampleRate, GAP = Math.round(0.2 * sr);
     const parts: { data?: Float32Array; dur: number; marks?: Mark[] }[] = [];
+    // Every piece of text to be spoken, in reading order. They are asked for several at a time, then put back in order.
+    type Job = { text: string };
+    const jobs: Job[] = [];
+    const plan = list.map((s) => {
+      if (!s.text.trim() || (s.onCam && s.clips[0]?.kind === "video")) return null;
+      return sentencesOf(s.text).map((sent) => ({ sent, pieces: splitText(sent).map((text) => { jobs.push({ text }); return jobs.length - 1; }) }));
+    });
+    let spoken = 0;
+    const voice = server.voiceProvider === "cloudflare" ? cfVoice : oaVoice;
+    const pcm = await pool(VOICE_AT_ONCE, jobs.length, async (x) => {
+      const b = await speak(keys.voice, jobs[x].text, voice);
+      const d = (await ac.decodeAudioData(await b.arrayBuffer())).getChannelData(0).slice();
+      setMsg(`Recording narration: ${++spoken} of ${jobs.length} sentences done…`);
+      return d;
+    });
     for (let i = 0; i < list.length; i++) {
-      const s = list[i];
-      if (!s.text.trim() || (s.onCam && s.clips[0]?.kind === "video")) { parts.push({ dur: s.duration }); continue; }
-      const sents = sentencesOf(s.text);
+      const sents = plan[i];
+      if (!sents) { parts.push({ dur: list[i].duration }); continue; }
       const chunks: Float32Array[] = [], marks: Mark[] = [];
       let len = 0;
       for (let j = 0; j < sents.length; j++) {
-        setMsg(`Recording narration ${i + 1} of ${list.length} (sentence ${j + 1} of ${sents.length})…`);
-        const pcs: Float32Array[] = [];
-        for (const piece of splitText(sents[j])) {
-          const b = await speak(keys.voice, piece, server.voiceProvider === "cloudflare" ? cfVoice : oaVoice);
-          pcs.push((await ac.decodeAudioData(await b.arrayBuffer())).getChannelData(0).slice());
-        }
+        const pcs = sents[j].pieces.map((k) => pcm[k]);
         const n = pcs.reduce((a, c) => a + c.length, 0), d = new Float32Array(n);
         let o = 0;
         pcs.forEach((c) => { d.set(c, o); o += c.length; });
-        marks.push({ at: len / sr, len: n / sr, text: sents[j] });
+        marks.push({ at: len / sr, len: n / sr, text: sents[j].sent });
         chunks.push(d); len += n;
         if (j < sents.length - 1) { chunks.push(new Float32Array(GAP)); len += GAP; }
       }
@@ -1512,16 +1536,19 @@ export default function App() {
       let next = r.list, note = "";
       setStage(2);
       // Music and voiceover are both made here, in one go.
-      if (autoMusic && !musicUrl) {
-        setMsg("Making background music…");
+      // The music is made off the main thread while the voice is being recorded, so neither waits for the other.
+      const musicJob = autoMusic && !musicUrl ? (async () => {
         await new Promise((res) => setTimeout(res, 50));
-        try { const sr = 22050; setGeneratedMusic(await makeMusicOffThread(musicStyle, sr), sr); note += " Background music added."; }
-        catch { note += " Could not make background music on this device."; }
-      }
+        try { const sr = 22050; setGeneratedMusic(await makeMusicOffThread(musicStyle, sr), sr); return " Background music added."; }
+        catch { return " Could not make background music on this device."; }
+      })() : null;
+      if (musicJob && !keys.voice) setMsg("Making background music…");
       if (!keys.voice && !voiceUrl) note += " No voiceover was added because the server voice is not connected (enter the access code under Server access).";
       setLeadUsed(0);
-      if (keys.voice) next = await narrate(next);
-      else if (voiceDur) next = fitTo(next, voiceDur);
+      try {
+        if (keys.voice) next = await narrate(next);
+        else if (voiceDur) next = fitTo(next, voiceDur);
+      } finally { note += (await musicJob) ?? ""; }
       const len = next.reduce((a, s) => a + s.duration, 0);
       if (minSec && len < minSec) {
         setScenes(next); fillMeta(r.meta, next);
@@ -1529,19 +1556,20 @@ export default function App() {
         setStage(0); return;
       }
       setStage(3);
-      const withPics: Scene[] = [];
       aiSt.current = { fails: 0 };
-      let failure = "";
-      for (let i = 0; i < next.length; i++) {
+      let failure = "", got = 0;
+      const todo = next.filter((x) => !x.clips.some(mine)).length;
+      // Several scenes at a time (fewer for AI pictures, which are heavy), then put back in order.
+      const withPics: Scene[] = await pool(source === "stock" ? 4 : 2, next.length, async (i) => {
         const s = next[i];
-        if (s.clips.some(mine)) { withPics.push(s); continue; } // your own visuals stay; only scenes without them get generated ones
-        setMsg(source !== "stock" ? `Generating photoreal visuals for scene ${i + 1} of ${next.length} (can take a minute each)…` : `Finding multiple unique visuals for scene ${i + 1} of ${next.length}…`);
+        if (s.clips.some(mine)) return s; // your own visuals stay; only scenes without them get generated ones
         const n = shotsFor(source, s.duration, moving);
         try {
           const clips = await gatherClips({ keys, source, topic: topic.trim(), f: fmt, res, moving, st: aiSt.current, style: picStyle }, s, n);
-          withPics.push({ ...s, clips });
-        } catch (e) { failure = e instanceof Error ? e.message : ""; withPics.push(s); }
-      }
+          return { ...s, clips };
+        } catch (e) { failure = e instanceof Error ? e.message : ""; return s; }
+        finally { setMsg(source !== "stock" ? `Generating photoreal visuals: ${++got} of ${todo} scenes done (can take a minute each)…` : `Finding visuals: ${++got} of ${todo} scenes done…`); }
+      });
       const keptOwn = withPics.filter((x) => x.clips.some(mine)).length;
       if (keptOwn) note += ` Kept your own visuals in ${keptOwn} scene(s).`;
       if (failure) note += ` Some visuals failed: ${failure}`;
