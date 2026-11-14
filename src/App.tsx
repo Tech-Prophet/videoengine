@@ -12,6 +12,7 @@ import { drawEmbers, isEmberLevel } from "./embers.ts";
 import type { EmberLevel } from "./embers.ts";
 import { CARD_SECONDS, PROMO_MAX, PROMO_MIN, fitPassage, parsePromoReply, passageOf, promoBeats, promoRequest, promoState } from "./promo.ts";
 import { chapterList, publishPrompt, parseAnswer, srtFile } from "./publish.ts";
+import { fastRender, fastRenderSupported } from "./fastRender.ts";
 import { scriptPrompt } from "./scriptPrompt.ts";
 import { YouTubePanel } from "./YouTubePanel.tsx";
 import { duckFactor, levels, rmsActive, rmsAll } from "./mix.ts";
@@ -922,6 +923,7 @@ export default function App() {
   const playingRef = useRef(false);
   const onEnd = useRef<(() => void) | null>(null);
   const exportStart = useRef<number | null>(null);
+  const fastBusy = useRef(false); // true while the faster-than-real-time renderer owns the canvas
   const promoStage = useRef(0); // the step shown before a Promo Short started recording, restored afterwards
   const capture = useRef<{ req: () => void; frames: number } | null>(null); // while rendering: pushes each drawn picture into the recording
   const acRef = useRef<AudioContext | null>(null);
@@ -1092,6 +1094,7 @@ export default function App() {
     let last = performance.now(), lastUi = 0, lastL: Live | null = null, lastT = -1, lastDraw = 0;
     const getMedia = (u: string) => mediaRef.current[u];
     const tick = () => {
+      if (fastBusy.current) return; // the fast renderer is drawing frames itself
       const now = performance.now();
       const L = live.current, dt = Math.min(0.25, Math.max(0, (now - last) / 1000));
       last = now;
@@ -1667,6 +1670,67 @@ export default function App() {
     exportStart.current = null;
     seek(win ? win.a : 0);
     await Promise.all(Object.values(tracks.current).map((T) => rewind(T.el)));
+    if (attempt === 0 && !live.current.scenes.some((s) => s.onCam) && fastRenderSupported()) {
+      for (let k = 0; k < 40 && c.width !== (win ? dims("short", res)[0] : W); k++) await new Promise((r) => setTimeout(r, 50));
+      const began = performance.now(), planned = live.current.total - (win ? win.a : 0);
+      fastBusy.current = true;
+      let blob: Blob | null = null;
+      try {
+        const ctx = c.getContext("2d");
+        const seekTo = (v: Media | undefined, want: number) => new Promise<void>((done) => {
+          if (!(v instanceof HTMLVideoElement) || !v.duration) return done();
+          const t = want % v.duration;
+          if (!v.paused) v.pause();
+          if (Math.abs(v.currentTime - t) < 0.5 / live.current.fps) return done();
+          const f = () => { v.removeEventListener("seeked", f); done(); };
+          v.addEventListener("seeked", f); v.currentTime = t;
+          setTimeout(f, 800);
+        });
+        const targets = (tt: number): [number, number] => {
+          const L = live.current;
+          const te = L.card > 0 && tt >= L.card ? L.card - 0.05 : tt;
+          let i = 0; L.starts.forEach((st, k2) => { if (te >= st) i = k2; });
+          const sc = L.scenes[i], local = te - (L.starts[i] ?? 0);
+          const duck = L.duck ? duckFactor(!!tracks.current.voice?.el.src, sc?.marks, local) : 1;
+          const v = sc?.onCam || (L.card > 0 && tt >= L.card) ? 0 : L.voiceVol;
+          const m = L.musicVol * (sc?.onCam ? 0.25 : 1) * duck * (L.lead > 0 && tt < L.lead ? 1.7 : 1)
+            * (L.tail > 0 && tt > L.total - L.tail ? 1.3 * Math.max(0, Math.min(1, (L.total - tt) / 2.5)) : 1);
+          return [v, m];
+        };
+        blob = await fastRender({
+          canvas: c, fps, from: win ? win.a : 0, total: live.current.total,
+          bitrate: res >= 1440 ? 9e6 : res >= 1080 ? 5e6 : 2.5e6,
+          voiceUrl: tracks.current.voice?.el.src || undefined, musicUrl: tracks.current.music?.el.src || undefined,
+          targets, cancelled: () => false,
+          onProgress: (tt) => { tRef.current = tt; setT(tt); },
+          drawAt: async (tt) => {
+            const L = live.current;
+            const te = L.card > 0 && tt >= L.card ? L.card - 0.05 : tt;
+            let i = 0; L.starts.forEach((st, k2) => { if (te >= st) i = k2; });
+            const sc = L.scenes[i], local = te - (L.starts[i] ?? 0), sh = sc ? shotAt(sc, local) : null;
+            if (sc && sh) {
+              await seekTo(mediaRef.current[shotsOf(sc)[sh.k]?.url], sh.sl + 0.5);
+              if (sh.k < sh.n - 1 && sh.sl > sh.len - Math.min(0.5, sh.len * 0.3)) await seekTo(mediaRef.current[shotsOf(sc)[sh.k + 1]?.url], Math.max(0, 0.5 - (sh.len - sh.sl)));
+            }
+            if (ctx) drawFrame(ctx, L, i, tt, (u) => mediaRef.current[u]);
+          },
+        });
+      } catch { blob = null; }
+      fastBusy.current = false;
+      if (blob && blob.size > 50_000) {
+        const took = (performance.now() - began) / 1000;
+        const url = URL.createObjectURL(blob);
+        if (win) setPromoFile((old) => { if (old) URL.revokeObjectURL(old.url); return { url, name: `vortex-promo-short-${res}p.mp4`, mb: blob.size / 1e6, blob }; });
+        else setFile((old) => { if (old) URL.revokeObjectURL(old.url); return { url, name: `vortex-${fmt}-${res}p.mp4`, mb: blob.size / 1e6, blob }; });
+        if (win) setPromoWin(null);
+        tRef.current = live.current.total; setT(live.current.total);
+        setExporting(false); setStage(win ? prevStage : 5);
+        if (!win) { setTab("publish"); window.setTimeout(() => { setTab("publish"); sideScroll.current?.scrollTo({ top: 0 }); }, 50); }
+        setMsg(`${win ? "Promo Short: rendered" : "Rendered"} ${clock(planned)} of video in ${clock(took)}.`);
+        return;
+      }
+      seek(win ? win.a : 0); // could not do it fast here: record it the normal way
+    }
     const ac = ensureAc();
     await ac.resume();
     if (hasAudio && live.current.scenes.some((s) => s.onCam)) getClipGain();
