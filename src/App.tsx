@@ -514,7 +514,7 @@ const borrowVisuals = (list: Scene[]): Scene[] =>
 const SAVE_KEY = "vortex-project";
 type Saved = {
   v: 1; fmt: Fmt; res: number; fps: number; wpm: number; topic: string; tone: string; minutes: number; minSec: number;
-  scriptText: string; intro: string; source: Source; moving: boolean; caps: boolean; embers?: EmberLevel; fit?: Fit; musicStyle?: MusicStyle; autoMusic?: boolean; balance?: boolean; leadSec?: number; outro?: string; introColor?: string; accent?: string; aiNotes?: string; channel?: string; withChapters?: boolean; styleId?: StyleId; customStyle?: string; thumbTopic?: string; thumbScene?: string; thumbSetting?: string; vSources?: string; srcChecked?: boolean;
+  scriptText: string; intro: string; source: Source; moving: boolean; caps: boolean; embers?: EmberLevel; fit?: Fit; musicStyle?: MusicStyle; autoMusic?: boolean; balance?: boolean; leadSec?: number; outro?: string; introColor?: string; accent?: string; aiNotes?: string; withChapters?: boolean; styleId?: StyleId; customStyle?: string; thumbTopic?: string; thumbScene?: string; thumbSetting?: string; vSources?: string; srcChecked?: boolean;
   vTitle: string; vDesc: string; vTags: string; thumbText: string;
   scenes: Omit<Scene, "clips" | "marks">[];
 };
@@ -898,7 +898,6 @@ export default function App() {
   const [srcChecked, setSrcChecked] = useState(saved?.srcChecked ?? false);
   const [thumbReply, setThumbReply] = useState(""); // the AI's answer for the scene fields, pasted back
   const [aiNotes, setAiNotes] = useState(saved?.aiNotes ?? ""); // extra notes added to the prompt for any AI
-  const [channel, setChannel] = useState(saved?.channel ?? ""); // channel name, used in the script prompt's sign-off
   const [withChapters, setWithChapters] = useState(saved?.withChapters ?? false); // chapter titles in the publish prompt (they can give the story away)
   const [aiAnswer, setAiAnswer] = useState(""); // the AI's answer, pasted back
   const [pinned, setPinned] = useState<string | null>(null); // pinned comment text (null = the suggested one)
@@ -960,7 +959,7 @@ export default function App() {
   const totalWords = Math.round(minutes * wpm);
   const nScenes = fmt === "short" ? 4 : Math.max(6, Math.min(16, Math.round(minutes * 2)));
   const perScene = Math.round(totalWords / nScenes);
-  const aiPrompt = scriptPrompt({ short: fmt === "short", topic, tone, minutes, totalWords, perScene, nScenes, channel });
+  const aiPrompt = scriptPrompt({ short: fmt === "short", topic, tone, minutes, totalWords, perScene, nScenes });
 
   const ensureAc = () => {
     if (!acRef.current) {
@@ -1029,14 +1028,14 @@ export default function App() {
     const id = window.setTimeout(() => {
       try {
         const data: Saved = {
-          v: 1, fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, embers, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, aiNotes, channel, withChapters, styleId, customStyle, thumbTopic, thumbScene, thumbSetting, vSources, srcChecked, vTitle, vDesc, vTags, thumbText,
+          v: 1, fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, embers, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, aiNotes, withChapters, styleId, customStyle, thumbTopic, thumbScene, thumbSetting, vSources, srcChecked, vTitle, vDesc, vTags, thumbText,
           scenes: scenes.map((s) => ({ id: s.id, title: s.title, text: s.text, onScreen: s.onScreen, visual: s.visual, duration: s.duration, palette: s.palette })),
         };
         localStorage.setItem(SAVE_KEY, JSON.stringify(data));
       } catch { /* storage full or blocked: skip */ }
     }, 800);
     return () => clearTimeout(id);
-  }, [fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, embers, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, aiNotes, channel, withChapters, styleId, customStyle, thumbTopic, thumbScene, thumbSetting, vSources, srcChecked, vTitle, vDesc, vTags, thumbText, scenes]);
+  }, [fmt, res, fps, wpm, topic, tone, minutes, minSec, scriptText, intro, source, moving, caps, embers, fit, musicStyle, autoMusic, balance, leadSec, outro, introColor, accent, aiNotes, withChapters, styleId, customStyle, thumbTopic, thumbScene, thumbSetting, vSources, srcChecked, vTitle, vDesc, vTags, thumbText, scenes]);
   useEffect(() => {
     if (!code) return undefined;
     const ctl = new AbortController();
@@ -1919,7 +1918,6 @@ export default function App() {
             {tab === "create" && (<>
               <Section title="Script" defaultOpen>
                 <Field l="Video topic or title"><input className={inp} value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="e.g. 5 habits for productivity" /></Field>
-                <Field l="Channel name"><input className={inp} value={channel} onChange={(e) => setChannel(e.target.value)} placeholder="e.g. Dark History Focus" /></Field>
 
                 <Section title="Get a script from Claude, ChatGPT or any AI" note={scriptText.trim() ? "optional" : ""} defaultOpen={!scriptText.trim()}>
                   <div className="grid grid-cols-2 gap-3">
