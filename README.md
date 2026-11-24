@@ -86,7 +86,7 @@ Skipping this step leaves new class names unstyled. Plain CSS (spacing and phone
 
 ## Prompts for any AI
 
-The script prompt (Create tab) lives in `src/scriptPrompt.ts` and the publish prompt in `src/publish.ts`. The script prompt asks for a documentary-narrator voice, careful claims (no invented records, dates or names), fresh openers every time, a fixed opening built from an era-based subscribe ask and a closing line, a question-and-subscribe ending that never names the channel, and a spoiler-free description. The publish prompt keeps titles, tags and the description free of spoilers, and the pinned comment repeats the question the video ends on. Chapters are left out of the publish prompt unless you switch on "Add chapters to the description" in the Publish tab, because chapter titles tell viewers what happens.
+The script prompt (Create tab) lives in `src/scriptPrompt.ts` and the publish prompt in `src/publish.ts`. The script prompt asks for a documentary-narrator voice, careful claims (no invented records, dates or names), fresh openers every time, an opening scene that starts the story, then a short separate "Before We Go On" scene holding the era-based subscribe ask, a question-and-subscribe ending that never names the channel, and a spoiler-free description. The publish prompt keeps titles, tags and the description free of spoilers, and the pinned comment repeats the question the video ends on. Chapters are left out of the publish prompt unless you switch on "Add chapters to the description" in the Publish tab, because chapter titles tell viewers what happens.
 
 ## Share to YouTube
 

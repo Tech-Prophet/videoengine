@@ -6,7 +6,7 @@ export function scriptPrompt(i: ScriptPromptIn): string {
   const minWords = Math.round(i.perScene * 0.85);
   return `Write a YouTube ${i.short ? "Short" : "video"} script about: "${i.topic.trim() || "[your topic]"}".
 Tone: ${i.tone}. The narration must run about ${i.minutes} minute${i.minutes > 1 ? "s" : ""} when read aloud: at least ${i.totalWords} spoken words in total, and at least ${minWords} words in every scene. Do not summarise or shorten.
-${i.short ? "This is a vertical Short: hook the viewer in the first 3 seconds and keep every scene punchy." : "Hook the viewer in the first 10 seconds with the opening described under OPENING, state the promise of the video, give one idea per scene, and end as described under ENDING."}
+${i.short ? "This is a vertical Short: hook the viewer in the first 3 seconds and keep every scene punchy." : "Hook the viewer in the first 10 seconds with Scene 1 as described under OPENING, state the promise of the video, give one idea per scene, and end as described under ENDING."}
 Use exactly ${i.nScenes} scenes. Give every scene a short, specific title of 2 to 6 words that a viewer would want to click as a YouTube chapter, for example "Why Bakers Start Before Sunrise" or "A City Under Strain". Never name a scene "Hook", "Intro", "Scene 2", "Part 3", "Conclusion" or "Call to action", and do not give away the ending in a title. Write the narration as plain spoken sentences only, with no stage directions and no emojis. The video opens on a wide establishing view and closes on a wide, calm view, so keep the searches of the first and last scenes wide.
 
 VOICE
@@ -24,14 +24,12 @@ Where evidence varies, say so: "in some places", "in many towns", "often", "hist
 If you use a made-up example, say it is a composite or an example.
 
 ORIGINAL WORDING
-Never reuse openers, closers, catchphrases or signposts from other scripts you have written. Write every opening, ending and sign-off fresh. The only exceptions are the two fixed lines in OPENING.
+Never reuse openers, closers, catchphrases or signposts from other scripts you have written. Write every opening, ending and sign-off fresh. The only exception is the ask in Scene 2 of OPENING.
 
 OPENING
-${i.short ? "Open on the single strangest moment of the story, with no greeting and no introduction." : `Scene 1 is built in four parts, spoken in this order and in plain sentences:
-1. The story's own opening, one to three sentences that drop straight into this story. Use a different style each time: a scene, a surprising fact, a question, a date and place, or a contradiction. Never start with a greeting, and never with "Come with me", "Picture" or "Imagine".
-2. One short line that sets the scene for this story, spoken to "you".
-3. The ask, about the era or subject of the topic, not about this one video and without naming any channel. Say it in these words, filling in the era or subject: "If [era or subject] fascinates you, subscribe so you never miss one. And tell me in the comments which part of [era or subject] you want to hear about next." For example: "If ancient Rome fascinates you, subscribe so you never miss one."
-4. One closing line, in these words: "Now, step back into [era or subject] with me." Then carry on with the story.`}
+${i.short ? "Open on the single strangest moment of the story, with no greeting and no introduction." : `Scene 1 is the story's own opening. Two to four plain sentences that drop straight into this story, with no greeting and no ask. Use a different style each time: a scene, a surprising fact, a question, a date and place, or a contradiction. Never start with "Come with me", "Picture" or "Imagine". End Scene 1 on a line that makes the viewer want to know what happens next.
+Scene 2 is a short scene that holds only the ask, about 20 to 30 words and nothing else. It is the one scene that may be shorter than the minimum. Its title is "Before We Go On". Say it in these words, naming the era or subject of the topic once and then saying "it" or "that period": "If [era or subject] fascinates you, subscribe so you never miss one. And tell me in the comments which part you want to hear about next." Do not name any channel. Give it a calm, wide visual search that fits the story.
+Scene 3 carries on the story from the moment Scene 1 left it. Do not repeat Scene 1 and do not mention the ask.`}
 
 ENDING
 ${i.short ? `Finish on one short question to the viewer and a one-line invitation to follow for more.` : `Finish on a question to the viewer, a short invitation to like and subscribe, and a hint that another story is coming. Keep it warm and under 60 words.`}
