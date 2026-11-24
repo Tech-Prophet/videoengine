@@ -28,7 +28,7 @@ Never reuse openers, closers, catchphrases or signposts from other scripts you h
 
 OPENING
 ${i.short ? "Open on the single strangest moment of the story, with no greeting and no introduction." : `Scene 1 is the story's own opening. Two to four plain sentences that drop straight into this story, with no greeting and no ask. Use a different style each time: a scene, a surprising fact, a question, a date and place, or a contradiction. Never start with "Come with me", "Picture" or "Imagine". End Scene 1 on a line that makes the viewer want to know what happens next.
-Scene 2 is a short scene that holds only the ask, about 20 to 30 words and nothing else. It is the one scene that may be shorter than the minimum. Its title is "Before We Go On". Say it in these words, naming the era or subject of the topic once and then saying "it" or "that period": "If [era or subject] fascinates you, subscribe so you never miss one. And tell me in the comments which part you want to hear about next." Do not name any channel. Give it a calm, wide visual search that fits the story.
+Scene 2 is a short scene that holds only the ask, about 20 to 30 words and nothing else. It is the one scene that may be shorter than the minimum. Its title is "Before We Go On". Say it in these words, naming the era or subject of the topic once and then saying "it" or "that period": "If [era or subject] fascinates you, subscribe so you never miss one. And tell me in the comments where in the world you're watching from." Do not name any channel. Give it a calm, wide visual search that fits the story.
 Scene 3 carries on the story from the moment Scene 1 left it. Do not repeat Scene 1 and do not mention the ask.`}
 
 ENDING
