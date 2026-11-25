@@ -1,0 +1,21 @@
+name: Check
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx tsc -p tsconfig.app.json --noEmit
+      - run: npx oxlint
+      - run: npm run build
+      # The browser test tools are installed here only, so they never become part of the app.
+      - run: npm install --no-save playwright && npx playwright install --with-deps chromium
+      - run: node scripts/smoke.mjs
