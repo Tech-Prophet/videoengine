@@ -12,6 +12,7 @@ import { drawEmbers, isEmberLevel } from "./embers.ts";
 import type { EmberLevel } from "./embers.ts";
 import { CARD_SECONDS, PROMO_MAX, PROMO_MIN, fitPassage, parsePromoReply, passageOf, promoBeats, promoRequest, promoState } from "./promo.ts";
 import { chapterList, publishPrompt, parseAnswer, srtFile } from "./publish.ts";
+import { downloadProject, restoreProject } from "./backup.ts";
 import { fastRender, fastRenderSupported } from "./fastRender.ts";
 import { scriptPrompt } from "./scriptPrompt.ts";
 import { YouTubePanel } from "./YouTubePanel.tsx";
@@ -522,7 +523,14 @@ function loadSaved(): Saved | null {
   try {
     const d = JSON.parse(localStorage.getItem(SAVE_KEY) || "null") as Partial<Saved> | null;
     if (!d || d.v !== 1 || !Array.isArray(d.scenes) || !d.scenes.length) return null;
-    return d as Saved;
+    // A project from an older version, a damaged file or a hand-edited one may have fields of the wrong kind: put safe values in their place.
+    const str = (x: unknown) => (typeof x === "string" ? x : "");
+    const scenes = d.scenes.map((s, i) => ({
+      id: str(s?.id) || `s${i}`, title: str(s?.title), text: str(s?.text), onScreen: str(s?.onScreen), visual: str(s?.visual),
+      duration: typeof s?.duration === "number" && s.duration >= 0 ? s.duration : 0,
+      palette: Number.isInteger(s?.palette) ? Math.abs(s.palette as number) % PALETTES.length : i % PALETTES.length,
+    }));
+    return { ...d, scenes } as Saved;
   } catch { return null; }
 }
 
@@ -1981,6 +1989,19 @@ export default function App() {
                 <button className={`${btn()} w-full`} disabled={busy || exporting} onClick={loadOnly}>Load script into scenes only</button>
                 <button className={`${btn()} w-full`} disabled={busy || exporting} onClick={() => { if (window.confirm("Clear the saved project and start fresh?")) { try { localStorage.removeItem(SAVE_KEY); } catch { /* ignore */ } window.location.reload(); } }}>Start a new project</button>
                 <p className="text-xs text-slate-500">Script and settings are saved in this browser. Pictures and audio are fetched again after a refresh.</p>
+                <div className="flex gap-2">
+                  <button className={`${btn()} flex-1`} onClick={() => setMsg(downloadProject() ? "Project file downloaded." : "There is no saved project yet. Load a script first.")}>Download project file</button>
+                  <label className={`${btn()} flex-1 cursor-pointer text-center`}>
+                    Open project file
+                    <input type="file" accept="application/json,.json" className="hidden" onChange={async (e) => {
+                      const f = e.target.files?.[0]; e.target.value = "";
+                      if (!f) return;
+                      if (!window.confirm("Replace the current project with this file?")) return;
+                      const err = await restoreProject(f);
+                      if (err) setMsg(err); else window.location.reload();
+                    }} />
+                  </label>
+                </div>
                 {stage > 0 && (
                   <ul className="space-y-1 text-sm">
                     {STEPS.map((s, i) => {
